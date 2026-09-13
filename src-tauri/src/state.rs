@@ -227,6 +227,54 @@ pub fn fonts_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// 改名前的 identifier。数据目录名就是它（`%APPDATA%\com.minimemo.app\`）。
 const LEGACY_IDENTIFIER: &str = "com.minimemo.app";
 
+/// [`adopt_legacy_data_dir`] 的结果。
+///
+/// 它之所以是一个返回值而不是几行 `info!`，全因为那个函数的调用时机：它必须跑在
+/// `logging::init()` **之前**（日志文件也住在要被搬走的那个目录里），而那时候
+/// logger 还没装上 —— 在里面直接 `info!`/`warn!` 会被整个丢掉，**连「接管失败、
+/// 数据还在老目录」那句也一样**。而那句恰好是用户唯一能拿到的救援线索。
+///
+/// 所以：搬迁负责搬，调用方负责在日志就绪之后调 [`AdoptOutcome::report`]。
+pub enum AdoptOutcome {
+    /// 全新安装 / 老目录不存在 / 已经搬过了 —— 没什么可记的
+    Nothing,
+    /// `rename` 成功：老目录已不在，东西都在新目录里
+    Moved { from: PathBuf, to: PathBuf },
+    /// 逐文件复制成功：老目录原样保留
+    Copied { from: PathBuf, to: PathBuf },
+    /// 两条路都失败，数据仍在老目录 —— 最需要被看见的一种
+    Failed {
+        from: PathBuf,
+        to: PathBuf,
+        error: String,
+    },
+}
+
+impl AdoptOutcome {
+    /// 装好日志之后再调。等级（成功 info / 失败 warn）比文本更要紧，所以这里用
+    /// 匹配而不是 `Display`。
+    pub fn report(&self) {
+        match self {
+            Self::Nothing => {}
+            Self::Moved { from, to } => info!(
+                "数据目录已接管: {} -> {}",
+                from.display(),
+                to.display()
+            ),
+            Self::Copied { from, to } => info!(
+                "数据目录已复制: {} -> {}（老目录保留）",
+                from.display(),
+                to.display()
+            ),
+            Self::Failed { from, to, error } => warn!(
+                "数据目录接管失败: {error}（老数据仍在 {}，可手动移动到 {}）",
+                from.display(),
+                to.display()
+            ),
+        }
+    }
+}
+
 /// 把老 identifier 的数据目录整体接管过来（`com.minimemo.app` → `com.mino.app`）。
 ///
 /// 必须在 `logging::init()` **之前**调用。日志文件也住在这个目录里：先搬完再开
@@ -245,49 +293,47 @@ const LEGACY_IDENTIFIER: &str = "com.minimemo.app";
 ///
 /// 这个函数**没有单元测试覆盖** —— 它要一个真的 `AppHandle`。改它请务必实机走一
 /// 遍「装老版 → 产生数据 → 装新版」，`cargo check` 只证明它编译得过。
-pub fn adopt_legacy_data_dir(app: &AppHandle) {
+///
+/// 它**不自己打日志**，而是返回 [`AdoptOutcome`] 让调用方在 `logging::init()`
+/// 之后 `report()` —— 理由见 [`AdoptOutcome`] 的注释。
+pub fn adopt_legacy_data_dir(app: &AppHandle) -> AdoptOutcome {
     // 刻意不用 state::data_dir()：那个会 create_dir_all，而新目录一旦被建出来，
     // 下面的 rename 在 Windows 上必然失败 —— MoveFileEx 没法把一个目录并进一个
     // 已经存在的目录。
     let Ok(new_dir) = app.path().app_data_dir() else {
-        return;
+        return AdoptOutcome::Nothing;
     };
     let Some(parent) = new_dir.parent() else {
-        return;
+        return AdoptOutcome::Nothing;
     };
     let old_dir = parent.join(LEGACY_IDENTIFIER);
 
     if !old_dir.is_dir() {
-        return;
+        return AdoptOutcome::Nothing;
     }
     if new_dir.join("data.json").is_file() {
-        return;
+        return AdoptOutcome::Nothing;
     }
 
-    if !new_dir.exists() {
-        if fs::rename(&old_dir, &new_dir).is_ok() {
-            info!(
-                "数据目录已接管: {} -> {}",
-                old_dir.display(),
-                new_dir.display()
-            );
-            return;
-        }
+    if !new_dir.exists() && fs::rename(&old_dir, &new_dir).is_ok() {
+        return AdoptOutcome::Moved {
+            from: old_dir,
+            to: new_dir,
+        };
     }
 
     // rename 走不通（新目录已存在，或者撞上别的实例还没释放的文件句柄）就退到逐
     // 文件复制。复制**不动老目录**，所以这条路只增不减：中途失败下次启动会接着补完。
     match copy_tree(&old_dir, &new_dir) {
-        Ok(()) => info!(
-            "数据目录已复制: {} -> {}（老目录保留）",
-            old_dir.display(),
-            new_dir.display()
-        ),
-        Err(e) => warn!(
-            "数据目录接管失败: {e}（老数据仍在 {}，可手动移动到 {}）",
-            old_dir.display(),
-            new_dir.display()
-        ),
+        Ok(()) => AdoptOutcome::Copied {
+            from: old_dir,
+            to: new_dir,
+        },
+        Err(e) => AdoptOutcome::Failed {
+            from: old_dir,
+            to: new_dir,
+            error: e.to_string(),
+        },
     }
 }
 
