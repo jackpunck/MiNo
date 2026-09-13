@@ -54,6 +54,7 @@ fn main() {
             commands::reset_font,
             commands::apply_font_to_all,
             commands::runtime_info,
+            commands::foreground_is_fullscreen,
             commands::open_release_page,
             commands::save_window_position,
         ])

@@ -26,8 +26,21 @@ const DRAG_SAFETY_MS = 20000;
  */
 const INPUT_GRACE_MS = 2000;
 
-/** 窗口是不是系统级的当前活动窗口。由 Rust 的 WindowEvent::Focused 推送。 */
+/**
+ * 窗口是不是系统级的当前活动窗口。由 Rust 的 WindowEvent::Focused 推送。
+ *
+ * 它决定的是「切走就收缩、切回来就展开」，**不再是**悬停门控的判据 ——
+ * 那个改成了 `fullscreenAhead`，原因见 refreshHoverBlock。
+ */
 let active = true;
+
+/**
+ * 前台有没有全屏程序压着。悬停门控用，由 refreshHoverBlock 在 mouseenter 时刷新。
+ *
+ * 初值 `false`（放行）是刻意的：这个值只用来**抑制**悬停，万一查询那条路整个断掉，
+ * 退化成「鼠标碰到就展开」远好过退化成「感应条永远叫不醒」—— 后者正是要修的 bug。
+ */
+let fullscreenAhead = false;
 
 /** 输入框。模块级是因为收缩判据要用它，见 hasPendingInput。 */
 let inputEl = null;
@@ -63,7 +76,30 @@ function enqueue(op) {
  * 只用于记录，Rust 侧不拿它做任何分支。
  */
 function why(tag) {
-  return `${tag}(active=${active},pending=${hasPendingInput()},drag=${windowDragging})`;
+  const s = `active=${active},pending=${hasPendingInput()},drag=${windowDragging},full=${fullscreenAhead}`;
+  return `${tag}(${s})`;
+}
+
+/**
+ * 刷新 fullscreenAhead：问 Rust「前台是不是压着一个全屏程序」。
+ *
+ * 悬停门控的判据从「MiNo 必须是活动窗口」换成了这个。原来那条判据的问题不是
+ * 太严，而是**自锁**：感应条只在 MiNo 是活动窗口时才响应悬停，可它缩在屏幕边上
+ * 的时候恰恰不可能是活动窗口 —— 于是每一次都得先按 Alt+Space 把它叫活，感应条
+ * 自己永远醒不过来。用户看到的「鼠标碰上去没反应」就是这么来的。
+ *
+ * 真正会被浮窗打扰的场景其实只有全屏内容（全屏视频、全屏演示、F11 网页），
+ * 而那正是这个函数在问的事。桌面和普通窗口下用户把鼠标挪上来就是想用它。
+ *
+ * 查不到就当作「没有全屏程序」（放行），理由同 fullscreenAhead 的初值。
+ */
+async function refreshHoverBlock() {
+  try {
+    fullscreenAhead = !!(await invoke('foreground_is_fullscreen'));
+  } catch {
+    fullscreenAhead = false;
+  }
+  return fullscreenAhead;
 }
 
 /**
@@ -200,12 +236,13 @@ function scheduleCollapse() {
 /**
  * 窗口的活跃状态变了。
  *
- * 这是「鼠标扫过屏幕边缘会不会把窗口勾出来」的总开关（需求 1）：窗口不是当前
- * 活动窗口时，悬停不再展开，免得用户全屏看网页时被它打断。
- *
  * 判定源只有 Rust 的 WindowEvent::Focused 一处，不用 DOM 的 focus/blur ——
  * `document.hasFocus()` 受 webview 内部焦点（点到输入框、点到按钮）影响，
  * 和「这个窗口是不是系统当前活动窗口」不是一回事。
+ *
+ * 它管的是「切走就收缩、切回来就展开」。**悬停门控已经不看它了** —— 那条判据
+ * 会让感应条自锁（缩在屏幕边上的时候它恰恰不可能是活动窗口），是「鼠标碰上去
+ * 没反应」的根因。现在看 fullscreenAhead，见 refreshHoverBlock。
  */
 function setActive(next) {
   active = next;
@@ -314,11 +351,15 @@ export function initWindow() {
 
   // 边缘吸附：窗口缩成感应条后，鼠标进入即展开。
   //
-  // 进出都要受 active 门控。只门控 mouseenter 的话，窗口未激活且**没吸附**时
-  // 鼠标恰好划过窗口再离开，会走到 minimize_to_edge 的「没吸附」分支把窗口
-  // 整个隐藏掉 —— 那正是需求 1 要消灭的同一类骚扰。
+  // 门控条件是「前台有没有全屏程序」，**不是**「MiNo 是不是活动窗口」。
+  // 后者会自锁（见 refreshHoverBlock），是「感应条碰不出来」的根因。
+  //
+  // 判据要问 Rust，所以这里是异步的：mouseenter → 查一次 → 再决定展开。多出来
+  // 的那几毫秒对 4px 感应条的手感没有影响。
   document.documentElement.addEventListener('mouseenter', () => {
-    if (active) expand('hover');
+    refreshHoverBlock().then((blocked) => {
+      if (!blocked) expand('hover');
+    });
   });
   document.documentElement.addEventListener('mouseleave', (e) => {
     // 鼠标键还按着 = 用户在拖东西（拖窗口，或者拖待办排序），不是「离开」。
@@ -328,6 +369,12 @@ export function initWindow() {
     // 即使 WebView2 下 e.buttons 不可靠，也只是退回没有这道保险的行为。
     if (e.buttons !== 0) return;
 
-    if (active) scheduleCollapse();
+    // 全屏程序压着时不收缩：这种情况下上面压根没展开过，再走一遍 minimize_to_edge
+    // 会在「没吸附」分支把窗口整个藏掉 —— 那是同一类骚扰。用上一次 mouseenter
+    // 查到的值，不在这儿再问一次：收缩本来就还有 500ms 的延迟，再插一次往返
+    // 只会让时序更难讲清楚，而这一小段时间里前台换人的可能性可以忽略。
+    if (fullscreenAhead) return;
+
+    scheduleCollapse();
   });
 }

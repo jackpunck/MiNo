@@ -414,6 +414,75 @@ fn save_position_throttled(app: &AppHandle, x: i32, y: i32) {
 }
 
 // ---------------------------------------------------------------------------
+// 前台全屏探测
+// ---------------------------------------------------------------------------
+
+/// 前台窗口是不是一个铺满整块显示器的程序 —— 全屏视频、全屏演示、F11 的网页。
+///
+/// 只服务于一件事：感应条的悬停门控（[crate::commands::foreground_is_fullscreen]）。
+/// 全屏内容前面弹出一块浮窗是真的打扰；其余情况（桌面、普通窗口、窗口化的浏览器）
+/// 用户把鼠标挪到感应条上就是想用它，拦着只会让感应条看起来像坏了。
+///
+/// 判据是「前台窗口的矩形盖住了它所在显示器的矩形」。三条必须记住的：
+///
+///   - **桌面也满足这个判据**，所以要用 `GetShellWindow` 把它排掉。漏了这一步，
+///     「回到桌面后感应条没反应」会原样保留 —— 而那是要修的 bug 本身。
+///   - **容差不能省。** 无边框全屏的窗口边界经常和显示器差一两个像素，严格相等
+///     会让最典型的全屏场景漏判成「不全屏」。
+///   - **拿不到答案一律返回 `false`（放行）。** 这个函数只用来*抑制*悬停，失败方向
+///     必须偏向「照常展开」：退化成多展开一次，远好过退化成感应条永远叫不醒。
+pub fn foreground_is_fullscreen() -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetShellWindow, GetWindowRect,
+    };
+
+    /// 无边框全屏的边界常与显示器差一两个像素。
+    const TOLERANCE: i32 = 2;
+
+    // 全程零 IO，只是几个查询调用。失败路径全部提前 return false。
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+
+        // 桌面（Progman / WorkerW）铺满整块屏幕，但它不是「全屏内容」。
+        // 点一下桌面它就变前台 —— 不排掉的话，我们正要修的那个场景会被判成
+        // 「有全屏程序」，然后继续不响应。
+        if hwnd == GetShellWindow() {
+            return false;
+        }
+
+        // windows-sys 的结构体不实现 Default，用 zeroed 而不是 `..Default::default()`。
+        let mut window_rect: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut window_rect) == 0 {
+            return false;
+        }
+
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return false;
+        }
+
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+
+        let m = info.rcMonitor;
+        window_rect.left <= m.left + TOLERANCE
+            && window_rect.top <= m.top + TOLERANCE
+            && window_rect.right >= m.right - TOLERANCE
+            && window_rect.bottom >= m.bottom - TOLERANCE
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
 

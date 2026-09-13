@@ -16,6 +16,20 @@ tauri-plugin-single-instance = "2"
 # 仅用于把前端上传的字体/背景字节解码出原始二进制
 base64 = "0.22"
 
+# 只为一件事：判断前台窗口是不是铺满整块显示器的全屏程序（感应条的悬停门控，
+# 见 window::foreground_is_fullscreen）。浏览器里看不到别的窗口，这件事只有
+# Win32 知道。
+#
+# 用 windows-sys 而不是 `windows` crate：这里只要三个查询函数，原始 FFI 的签名
+# 跨版本稳定，不需要 Result 包装、也不需要为每个结构体准备 Default。
+# features 精确到用到的三个模块，不要图省事开 "all" —— 那会把整棵 Win32 绑定的
+# 编译时间都算进来。
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

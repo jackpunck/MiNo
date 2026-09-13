@@ -633,6 +633,18 @@ pub fn runtime_info(app: AppHandle) -> RuntimeInfo {
     }
 }
 
+/// 前台是不是压着一个全屏程序。感应条的悬停门控用，见 [ui/window.js](ui/window.js)。
+///
+/// 之所以要绕到 Rust 来问：浏览器里看不到别的窗口，「前台窗口有没有铺满显示器」
+/// 只有 Win32 知道。前端在 `mouseenter` 里查一次，据此决定要不要展开。
+///
+/// 它**零 IO、零锁**，纯粹是一次查询 —— 悬停是热路径，不能像数据类 command 那样
+/// 走 `current`/`mutate`。
+#[tauri::command(async)]
+pub fn foreground_is_fullscreen() -> bool {
+    crate::window::foreground_is_fullscreen()
+}
+
 /// 用系统默认浏览器打开发布页面。
 ///
 /// 前端拿不到 `tauri-plugin-opener` 的 JS API（插件是独立 npm 包，而本项目没有
