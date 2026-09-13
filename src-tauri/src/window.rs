@@ -68,7 +68,7 @@ pub fn show(app: &AppHandle) {
     let _ = w.show();
     let _ = w.set_focus();
     // 让前端把光标放回输入框
-    let _ = w.emit("minimemo://focus-input", ());
+    let _ = w.emit("mino://focus-input", ());
 }
 
 /// 显示并把输入框聚焦。托盘双击、全局快捷键、单实例唤醒都走这里。
@@ -77,7 +77,7 @@ pub fn show_and_focus(app: &AppHandle) {
     let _ = w.show();
     let _ = w.unminimize();
     let _ = w.set_focus();
-    let _ = w.emit("minimemo://focus-input", ());
+    let _ = w.emit("mino://focus-input", ());
 }
 
 pub fn hide(app: &AppHandle) {

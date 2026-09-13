@@ -178,8 +178,10 @@ pub fn import_bytes(app: &AppHandle, label: &str, bytes: &[u8]) -> Result<Custom
     };
 
     Ok(CustomFont {
-        // 自行分配 family 名：保证是 ASCII，且绝不会覆盖同名系统字体
-        family: format!("MiniMemo {}", &id[..8]),
+        // 自行分配 family 名：保证是 ASCII，且绝不会覆盖同名系统字体。
+        // 前缀是常量而不是字面量：它会落到 settings.fontFamily 和每条 todo.font
+        // 上，改一次就得配一次迁移（见 state::rename_font_family_prefix）。
+        family: format!("{}{}", state::FONT_FAMILY_PREFIX, &id[..8]),
         id,
         label,
         file: rel,

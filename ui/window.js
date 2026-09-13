@@ -245,9 +245,9 @@ export function initWindow() {
   const { listen } = window.__TAURI__.event;
 
   // Rust 侧要求我们把输入框聚焦
-  listen('minimemo://focus-input', () => focusInput());
-  listen('minimemo://open-settings', () => openSettings());
-  listen('minimemo://focus-changed', (e) => setActive(!!e.payload));
+  listen('mino://focus-input', () => focusInput());
+  listen('mino://open-settings', () => openSettings());
+  listen('mino://focus-changed', (e) => setActive(!!e.payload));
 
   inputEl = document.getElementById('input');
 

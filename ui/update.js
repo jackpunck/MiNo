@@ -4,14 +4,14 @@
 // minisign 密钥、在 CI 里配签名密钥、还要维护一份 latest.json —— 为了「看看
 // 有没有新版」不值当。
 //
-// 这是 MiniMemo 唯一会主动联网的地方：只有用户点了「检查更新」才会请求一次
+// 这是 MiNo 唯一会主动联网的地方：只有用户点了「检查更新」才会请求一次
 // GitHub 的公开 API，只读、不发送任何本地数据、不落盘任何东西。
 
 import { invoke } from './state.js';
 import { isNewer } from './version.js';
 
 const RELEASES_API =
-  'https://api.github.com/repos/jackpunck/MiniMemo/releases/latest';
+  'https://api.github.com/repos/jackpunck/MiNo/releases/latest';
 
 /** 超时。挂太久不如直接告诉用户失败了。 */
 const TIMEOUT_MS = 8000;

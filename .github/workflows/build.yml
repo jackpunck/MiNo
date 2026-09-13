@@ -111,15 +111,15 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: MiniMemo-安装包
+          name: MiNo-安装包
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
       - name: 上传便携版
         uses: actions/upload-artifact@v4
         with:
-          name: MiniMemo-便携版
-          path: src-tauri/target/release/MiniMemo.exe
+          name: MiNo-便携版
+          path: src-tauri/target/release/MiNo.exe
           if-no-files-found: error
 
       # 推一个 v0.1.0 这样的 tag，就把安装包挂到 Release 上 —— 那个页面链接
@@ -130,5 +130,5 @@ jobs:
         with:
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/MiniMemo.exe
+            src-tauri/target/release/MiNo.exe
           generate_release_notes: true

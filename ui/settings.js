@@ -281,7 +281,7 @@ async function renderInfo() {
 
     // 版本号的唯一来源是 Rust 的 CARGO_PKG_VERSION，前端不再存第二份
     const version = document.getElementById('app-version');
-    version.textContent = `MiniMemo v${info.version}`;
+    version.textContent = `MiNo v${info.version}`;
     currentVersion = info.version;
   } catch {
     /* 信息区是锦上添花，失败就不显示 */

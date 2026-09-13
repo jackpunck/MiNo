@@ -60,10 +60,15 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // 日志要最先接管：下面每一步的失败都得留下痕迹，包括「根本没走到
+            // 数据目录接管必须排在**日志之前**：日志文件也住在数据目录里，先搬完
+            // 再开日志，老日志才能跟着一起过来。顺序反了会先在新目录建出一个空
+            // 日志，而搬迁会因为「新目录已存在」放弃 —— 用户的待办就真没了。
+            state::adopt_legacy_data_dir(&handle);
+
+            // 日志要尽早接管：下面每一步的失败都得留下痕迹，包括「根本没走到
             // 这一步」。它自己拿不到目录时只是不记日志，不影响启动。
             logging::init(&handle);
-            info!("MiniMemo {} 启动", env!("CARGO_PKG_VERSION"));
+            info!("MiNo {} 启动", env!("CARGO_PKG_VERSION"));
 
             // 启动顺序（规格 §21）。以下每一步失败都不得阻止应用启动 ——
             // 背景丢了、字体文件没了，都不该让用户连窗口都看不到。
@@ -93,7 +98,7 @@ fn main() {
             }
 
             window::init(&handle);
-            info!("MiniMemo 启动完成");
+            info!("MiNo 启动完成");
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -115,7 +120,7 @@ fn main() {
                 // 的热路径 —— 一次追加写换一条时间线，值。绝不要往这里加
                 // handle_moved 那类高频事件。
                 info!("窗口焦点{}", if *focused { "进入" } else { "离开" });
-                let _ = window.app_handle().emit("minimemo://focus-changed", *focused);
+                let _ = window.app_handle().emit("mino://focus-changed", *focused);
             }
             WindowEvent::CloseRequested { api, .. } => {
                 // ✕ 只隐藏，不退出。真正的退出走托盘菜单。

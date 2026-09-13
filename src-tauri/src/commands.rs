@@ -654,7 +654,7 @@ pub fn open_release_page(tag: String) -> Result<(), String> {
         return Err("版本号格式非法".into());
     }
 
-    let url = format!("https://github.com/jackpunck/MiniMemo/releases/tag/{tag}");
+    let url = format!("https://github.com/jackpunck/MiNo/releases/tag/{tag}");
 
     // `""` 那个空参数是 start 的窗口标题占位。省掉它，start 会把 URL 当成标题，
     // 结果是弹一个空的 cmd 窗口而不是浏览器。

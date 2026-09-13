@@ -16,10 +16,11 @@ const loaded = new Map();
 
 /**
  * 导入字体在 Rust 侧被分配的名字。
- * 与 `fonts.rs` 的 `format!("MiniMemo {}", &id[..8])` 保持一致。
+ * 与 `state.rs` 的 `FONT_FAMILY_PREFIX` 必须逐字一致 —— 前端靠它构造 FontFace，
+ * 对不上就会静默回退到链尾的 sans-serif（表现成「字体自己变了」）。
  */
 function familyOf(id) {
-  return `MiniMemo ${id.slice(0, 8)}`;
+  return `MiNo ${id.slice(0, 8)}`;
 }
 
 /**
@@ -54,7 +55,7 @@ export function applyChain(chain) {
   document.documentElement.style.setProperty('--note-font', value);
 
   try {
-    localStorage.setItem('minimemo.font', value);
+    localStorage.setItem('mino.font', value);
   } catch {
     /* 缓存写不进去不影响使用 */
   }

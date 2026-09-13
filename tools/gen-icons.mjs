@@ -1,4 +1,4 @@
-// 生成 MiniMemo 的应用图标（PNG + ICO）。
+// 生成 MiNo 的应用图标（PNG + ICO）。
 //
 // tauri-build 在 Windows 上会把 icons/icon.ico 编译进可执行文件的资源段，
 // 缺少该文件会直接导致 `cargo build` 失败，因此这个脚本是仓库自举的一部分。

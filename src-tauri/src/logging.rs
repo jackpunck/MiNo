@@ -21,7 +21,7 @@ use crate::state;
 /// 日志是无界的，不封顶就会一直长 —— 用户目录里不该出现一个几百 MB 的文本文件。
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-const LOG_NAME: &str = "minimemo.log";
+const LOG_NAME: &str = "mino.log";
 
 struct FileLogger {
     file: Mutex<File>,

@@ -7,7 +7,7 @@
 // 这只是缓存，不是权威来源：app.js 拿到真实设置后会覆盖它并回写。
 (function () {
   try {
-    var chain = localStorage.getItem('minimemo.font');
+    var chain = localStorage.getItem('mino.font');
     if (chain) {
       document.documentElement.style.setProperty('--note-font', chain);
     }

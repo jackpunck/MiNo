@@ -1,4 +1,4 @@
-/* MiniMemo 视觉规范（规格 §13）。
+/* MiNo 视觉规范（规格 §13）。
    窗口是 transparent + decorations:false，所以圆角和阴影全部由 CSS 负责。 */
 
 :root {

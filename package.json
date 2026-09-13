@@ -1,8 +1,8 @@
 {
-  "name": "minimemo",
-  "version": "0.1.2",
+  "name": "mino",
+  "version": "0.2.0",
   "private": true,
-  "description": "MiniMemo - 常驻桌面的极简今日待办浮窗",
+  "description": "MiNo - 常驻桌面的极简今日待办浮窗",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

@@ -15,7 +15,7 @@ use tauri::{
 
 use crate::{state, window};
 
-const TRAY_ID: &str = "minimemo-tray";
+const TRAY_ID: &str = "mino-tray";
 
 /// 「窗口置顶」复选框的句柄。
 ///
@@ -27,8 +27,8 @@ static ONTOP_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let always_on_top = state::load(app).settings.always_on_top;
 
-    let show_i = MenuItem::with_id(app, "show", "显示 MiniMemo", true, None::<&str>)?;
-    let hide_i = MenuItem::with_id(app, "hide", "隐藏 MiniMemo", true, None::<&str>)?;
+    let show_i = MenuItem::with_id(app, "show", "显示 MiNo", true, None::<&str>)?;
+    let hide_i = MenuItem::with_id(app, "hide", "隐藏 MiNo", true, None::<&str>)?;
     let ontop_i = CheckMenuItem::with_id(
         app,
         "ontop",
@@ -61,7 +61,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     )?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("MiniMemo")
+        .tooltip("MiNo")
         .menu(&menu)
         // 左键用来切换显隐，右键才弹菜单
         .show_menu_on_left_click(false)
@@ -95,7 +95,7 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "settings" => {
             window::show_and_focus(app);
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.emit("minimemo://open-settings", ());
+                let _ = w.emit("mino://open-settings", ());
             }
         }
         "quit" => {

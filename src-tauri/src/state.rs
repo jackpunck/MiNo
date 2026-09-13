@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use chrono::Local;
@@ -18,7 +18,7 @@ use tauri::{AppHandle, Manager};
 /// 否则一律阻止退出以保持后台驻留。
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
-pub const DATA_VERSION: u32 = 3;
+pub const DATA_VERSION: u32 = 4;
 
 /// 归档上限。archives 只增不减会随着时间无限膨胀，超出后丢弃最旧的记录。
 const ARCHIVE_LIMIT: usize = 500;
@@ -132,6 +132,19 @@ pub struct Settings {
 pub const DEFAULT_FONT_CHAIN: &str =
     "\"Segoe UI\", \"Microsoft YaHei\", \"微软雅黑\", system-ui, sans-serif";
 
+/// 给导入字体分配的 family 名前缀，后面接 id 的前 8 位。
+///
+/// **这个串会被写进磁盘**：`settings.fontFamily`、`custom_fonts[*].family`、
+/// 以及每条 `todo.font` 都带着它。所以改前缀不是改个常量就完事，必须配一次
+/// `rename_font_family_prefix` 迁移。
+///
+/// 与 `ui/fonts.js` 的 `familyOf()` 必须逐字一致 —— 前端靠它构造 `FontFace`，
+/// 对不上就会静默回退到链尾的 sans-serif。
+pub const FONT_FAMILY_PREFIX: &str = "MiNo ";
+
+/// 改名前的老前缀。**只给迁移用**，别在新代码里引用它。
+pub const LEGACY_FONT_FAMILY_PREFIX: &str = "MiniMemo ";
+
 /// 便签正文的默认颜色，与 styles.css 里 `--note-text` 的初始值必须一致。
 pub const DEFAULT_TEXT_COLOR: &str = "#f5f5f7";
 
@@ -194,7 +207,7 @@ pub fn now_ms() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// 应用数据目录。由 Tauri path API 解析（Windows 上是
-/// `%APPDATA%\com.minimemo.app\`），绝不硬编码 %APPDATA%。
+/// `%APPDATA%\com.mino.app\`），绝不硬编码 %APPDATA%。
 pub fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -209,6 +222,102 @@ pub fn fonts_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = data_dir(app)?.join("fonts");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// 改名前的 identifier。数据目录名就是它（`%APPDATA%\com.minimemo.app\`）。
+const LEGACY_IDENTIFIER: &str = "com.minimemo.app";
+
+/// 把老 identifier 的数据目录整体接管过来（`com.minimemo.app` → `com.mino.app`）。
+///
+/// 必须在 `logging::init()` **之前**调用。日志文件也住在这个目录里：先搬完再开
+/// 日志，老日志跟着一起过来；顺序反了就会先在**新**目录里建出一个空日志，老日志
+/// 留在原地，而搬迁会因为「新目录已存在」直接放弃 —— 用户的待办就真没了。
+///
+/// 三条规则，合起来保证「要么整体搬成功，要么一个字节都不动」：
+///
+///   1. 老目录不存在 → 全新安装，什么都不做
+///   2. 新目录里已经有 data.json → 认为搬过了，绝不覆盖
+///   3. 否则：能 rename 就 rename（同盘，不复制字节、不留半截状态），
+///      走不通再退到逐文件复制
+///
+/// **老目录一律不删。** 任何失败都只 warn、不阻断启动（规格 §21）：最坏情况是用
+/// 户看到初始状态，而他的数据原封不动躺在老目录里，日志里写着两个路径。
+///
+/// 这个函数**没有单元测试覆盖** —— 它要一个真的 `AppHandle`。改它请务必实机走一
+/// 遍「装老版 → 产生数据 → 装新版」，`cargo check` 只证明它编译得过。
+pub fn adopt_legacy_data_dir(app: &AppHandle) {
+    // 刻意不用 state::data_dir()：那个会 create_dir_all，而新目录一旦被建出来，
+    // 下面的 rename 在 Windows 上必然失败 —— MoveFileEx 没法把一个目录并进一个
+    // 已经存在的目录。
+    let Ok(new_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let Some(parent) = new_dir.parent() else {
+        return;
+    };
+    let old_dir = parent.join(LEGACY_IDENTIFIER);
+
+    if !old_dir.is_dir() {
+        return;
+    }
+    if new_dir.join("data.json").is_file() {
+        return;
+    }
+
+    if !new_dir.exists() {
+        if fs::rename(&old_dir, &new_dir).is_ok() {
+            info!(
+                "数据目录已接管: {} -> {}",
+                old_dir.display(),
+                new_dir.display()
+            );
+            return;
+        }
+    }
+
+    // rename 走不通（新目录已存在，或者撞上别的实例还没释放的文件句柄）就退到逐
+    // 文件复制。复制**不动老目录**，所以这条路只增不减：中途失败下次启动会接着补完。
+    match copy_tree(&old_dir, &new_dir) {
+        Ok(()) => info!(
+            "数据目录已复制: {} -> {}（老目录保留）",
+            old_dir.display(),
+            new_dir.display()
+        ),
+        Err(e) => warn!(
+            "数据目录接管失败: {e}（老数据仍在 {}，可手动移动到 {}）",
+            old_dir.display(),
+            new_dir.display()
+        ),
+    }
+}
+
+/// 递归复制目录，已存在的文件直接覆盖。
+///
+/// 覆盖语义是必需的：它让这个函数可以安全地重复调用，上面那句「新目录里有
+/// data.json」也才能兼作「已经搬完了」的判据。
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(src)? {
+        entries.push(entry?);
+    }
+
+    // data.json 排最后。它不是普通文件，而是「这一趟搬完了」的完成标记：它一旦
+    // 落地，`adopt_legacy_data_dir` 开头那句守卫就会认定一切就绪。反过来说，要是
+    // 它在 fonts/ 之前就位，一次半截复制会被误判成成功，而缺了 fonts/ 会让
+    // `prune_missing` 把用户导入的字体全部清掉。
+    entries.sort_by_key(|e| e.file_name() == "data.json");
+
+    for entry in entries {
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +379,52 @@ pub fn apply_font_to_all(data: &mut AppData) -> usize {
     n
 }
 
+/// 把导入字体的 family 前缀从 `MiniMemo ` 改写成 `MiNo `（v3 → v4）。
+///
+/// 这个前缀**写在磁盘上**三处，漏掉任何一处的表现都是「我导入的字体自己变了」：
+///
+///   - `settings.font_family`：全局字体链
+///   - `settings.custom_fonts[*].family`：`list_fonts` 拿它拼预览链，最容易漏 ——
+///     它不参与便签正文渲染，出了问题只有字体列表看起来是坏的
+///   - `todos[*].font` 与 `archives[*].font`：建任务时盖的那个章
+///
+/// 不改写的话它们指向的 family 永远注册不进来，浏览器静默回退到链尾的
+/// `sans-serif`，而且用户怎么改字体设置都救不回来。
+///
+/// 幂等（改完就再也匹配不到老前缀），所以**刻意不加版本门控**：这样连手工还原过
+/// 老备份的数据也能被顺手修好。
+///
+/// 代价是每次 `load()` 都会扫一遍 todos —— `load` 不只在启动时跑，每条 command
+/// 都要走一次。但那点 `contains` 跟 `load` 本来就得做的整份 JSON 解析比完全是
+/// 噪声，不值得为它引入一个「迁移过没有」的状态位（那个状态位自己出错的方式，
+/// 恰恰就是「迁移没跑但没人发现」）。
+fn rename_font_family_prefix(data: &mut AppData) -> usize {
+    fn fix(s: &mut String) -> usize {
+        if s.contains(LEGACY_FONT_FAMILY_PREFIX) {
+            *s = s.replace(LEGACY_FONT_FAMILY_PREFIX, FONT_FAMILY_PREFIX);
+            1
+        } else {
+            0
+        }
+    }
+
+    let mut n = fix(&mut data.settings.font_family);
+
+    for f in &mut data.settings.custom_fonts {
+        n += fix(&mut f.family);
+    }
+    for t in &mut data.todos {
+        n += fix(&mut t.font);
+    }
+    // archives 现在不渲染，但留着一条指向失效 family 的记录就是下一次「字体自己
+    // 变了」的引信 —— 跟 prune_missing 要把 todos 清干净是同一个理由。
+    for t in &mut data.archives {
+        n += fix(&mut t.font);
+    }
+
+    n
+}
+
 fn migrate(data: &mut AppData) {
     // 「填空」类的修复要排在版本迁移**前面**：v2 → v3 会拿 settings.font_family
     // 去给老待办盖章，先把空值补成默认链，否则盖下去的是个空串。
@@ -283,6 +438,15 @@ fn migrate(data: &mut AppData) {
     // 兜住了，这里防的是手工编辑过的或早期版本写坏的 data.json。
     if data.settings.text_color.trim().is_empty() {
         data.settings.text_color = DEFAULT_TEXT_COLOR.into();
+    }
+
+    // 改名迁移：`MiniMemo ` → `MiNo `。位置很讲究 —— 必须在上面两个「填空」
+    // **之后**（空链先补成默认链，省得对一个空串做替换），又必须在下面 v2 → v3
+    // 的盖章**之前**：盖章是从 `settings.font_family` 拷贝，先把它改对，盖下去的
+    // 才是新前缀。两处都做也没关系，但先做更省事。
+    let renamed = rename_font_family_prefix(data);
+    if renamed > 0 {
+        info!("已改写 {renamed} 处字体 family 前缀");
     }
 
     // v1 → v2：遮罩默认值从 0.65 降到 0.28。
@@ -725,5 +889,106 @@ mod tests {
 
         assert_eq!(data.todos[0].font, DEFAULT_FONT_CHAIN);
         assert_eq!(data.todos[0].font_id, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 改名迁移：MiniMemo → MiNo（v3 → v4）
+    // -----------------------------------------------------------------------
+
+    /// 一份「改名前」的数据：导入字体的 family 前缀还是老的，而且这个前缀按当时
+    /// 的样子散布在三处会落盘的地方。
+    fn pre_rename_data() -> AppData {
+        let old_id = "3f2a1b0c9d8e";
+        let old_family = format!("{LEGACY_FONT_FAMILY_PREFIX}3f2a1b0c");
+        // 用真的 `chain_for` 拼老链，跟改名前那一刻写进磁盘的东西逐字一致
+        let old_chain = crate::fonts::chain_for(&old_family);
+
+        let mut data = AppData::default();
+        data.version = 3;
+        data.settings.custom_fonts = vec![CustomFont {
+            id: old_id.into(),
+            family: old_family,
+            label: "霞鹜文楷".into(),
+            file: "fonts/3f2a1b0c.ttf".into(),
+        }];
+        data.settings.font_family = old_chain.clone();
+        data.settings.font_id = Some(old_id.into());
+
+        let mut t = todo("a", false, 1, 0);
+        t.font = old_chain.clone();
+        t.font_id = Some(old_id.into());
+        data.todos.push(t);
+
+        let mut a = todo("z", true, 0, 0);
+        a.font = old_chain;
+        data.archives.push(a);
+
+        data
+    }
+
+    /// **改动核心的回归测试**：改名后磁盘上那三处 family 前缀必须全部改写。
+    ///
+    /// 漏掉任意一处的表现都是「我导入的字体自己变了」—— 那个 family 永远注册不
+    /// 进来，浏览器静默回退到链尾的 sans-serif，而且用户怎么改字体设置都救不回。
+    /// `custom_fonts[*].family` 是最容易漏的：它不参与正文渲染，坏了只有字体列表
+    /// 看起来是坏的。
+    #[test]
+    fn migrate_rewrites_legacy_font_family_prefix_everywhere() {
+        let mut data = pre_rename_data();
+        let old = LEGACY_FONT_FAMILY_PREFIX;
+        let new = FONT_FAMILY_PREFIX;
+
+        // 前提：构造出来的数据确实是「老」的
+        assert!(data.settings.font_family.contains(old));
+        assert!(data.settings.custom_fonts[0].family.starts_with(old));
+
+        migrate(&mut data);
+
+        assert!(!data.settings.font_family.contains(old));
+        assert!(data.settings.font_family.contains(new));
+        assert!(data.settings.custom_fonts[0].family.starts_with(new));
+        assert!(data.todos[0].font.contains(new));
+        assert!(data.archives[0].font.contains(new));
+        assert_eq!(data.version, DATA_VERSION);
+    }
+
+    /// 改写前缀**不能顺手弄丢数据** —— 这是本仓库最重的一类回归。
+    #[test]
+    fn rename_prefix_preserves_everything_else() {
+        let mut data = pre_rename_data();
+        let before_todos = data.todos.len();
+        let before_archives = data.archives.len();
+
+        migrate(&mut data);
+
+        assert_eq!(data.todos.len(), before_todos);
+        assert_eq!(data.archives.len(), before_archives);
+        assert_eq!(data.todos[0].id, "a");
+        assert_eq!(data.todos[0].text, "a");
+        assert_eq!(data.todos[0].font_id.as_deref(), Some("3f2a1b0c9d8e"));
+        assert_eq!(data.settings.custom_fonts[0].file, "fonts/3f2a1b0c.ttf");
+        assert_eq!(data.settings.custom_fonts[0].label, "霞鹜文楷");
+        assert_eq!(data.settings.font_id.as_deref(), Some("3f2a1b0c9d8e"));
+    }
+
+    /// 幂等：跑第二遍无事可做。
+    #[test]
+    fn rename_prefix_is_idempotent() {
+        let mut data = pre_rename_data();
+        migrate(&mut data);
+
+        assert_eq!(rename_font_family_prefix(&mut data), 0);
+        assert_eq!(rename_font_family_prefix(&mut data), 0);
+    }
+
+    /// 用户的系统字体链里没有那个前缀，一个字节都不该动。
+    #[test]
+    fn rename_prefix_leaves_system_fonts_alone() {
+        let mut data = AppData::default();
+        data.version = DATA_VERSION;
+        data.settings.font_family = "\"Consolas\", monospace".into();
+
+        assert_eq!(rename_font_family_prefix(&mut data), 0);
+        assert_eq!(data.settings.font_family, "\"Consolas\", monospace");
     }
 }
