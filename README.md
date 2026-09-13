@@ -15,7 +15,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `MiNo_0.2.0_x64-setup.exe` | 安装包。双击安装,之后从开始菜单启动。 |
+| `MiNo_0.2.1_x64-setup.exe` | 安装包。双击安装,之后从开始菜单启动。 |
 | `MiNo.exe` | 便携版。**双击就能跑,不写注册表、不需要安装。** |
 
 拿不准就下便携版 —— 它不碰系统,想删掉直接把文件删了就行。
@@ -290,7 +290,7 @@ npm run icons      # 重新生成 src-tauri/icons
    > 要在分支上拿反馈,得开一个到 `main` 的 PR。
 
 2. 想拿安装包:Actions 页面手动触发一次,在该次运行的 Artifacts 里下载。
-3. 或者推一个 tag(`git tag v0.2.0 && git push origin v0.2.0`),
+3. 或者推一个 tag(`git tag v0.2.1 && git push origin v0.2.1`),
    会自动建 Release 并挂上安装包和便携版。
 
 > **要分清「CI 绿过」和「验证过了」。** `cargo check` 不链接、不打包,也**从不运行程序**。
