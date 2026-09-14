@@ -7,9 +7,25 @@ import { state, call, toast } from './state.js';
 import { isLoaded, DEFAULT_CHAIN } from './fonts.js';
 import { initDrag, cancelDrag } from './dnd.js';
 
+/**
+ * 今天的本地日期（`YYYY-MM-DD`），与 Rust 的 `state::today_string()` 同源同格式。
+ *
+ * **别改回读 `settings.lastCheckDate`。** 那个值看着像「今天」，其实是「上次跨日
+ * 结算发生在哪天」，而且它在前端只会被更新一次 —— `load_state` 只在启动时调
+ * （[ui/app.js](ui/app.js) 的 boot），之后 `state.data` 要靠别的 command 返回快照
+ * 才会刷新。页面跨夜开着时它停在前一天，于是「昨天建的」和「今天」被判成同一天，
+ * 日期前缀整个不出现。
+ *
+ * 这不是理论推演：2026-09-14 实机复现过 —— 日志显示应用从 09-13 16:04 起就没重启
+ * 过，09-13 建的那条未完成待办因此一直不带前缀，看着像功能坏了。旧的两条（09-11
+ * 建）反而正常，所以表现是「时灵时不灵」，最容易被误判成偶发。
+ *
+ * 「今天」只有客户端自己知道。问服务端要一个顺带更新的字段，早晚会漂。
+ */
 function todayKey() {
-  // 跨日检查跑完之后 lastCheckDate 就等于今天，直接拿来用即可
-  return state.data.settings?.lastCheckDate || '';
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 function buildItem(todo) {
