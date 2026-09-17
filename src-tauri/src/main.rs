@@ -33,6 +33,7 @@ fn main() {
             commands::delete_todo,
             commands::clear_completed,
             commands::reorder_todos,
+            commands::edit_todo,
             commands::set_always_on_top,
             commands::hide_window,
             commands::show_window,

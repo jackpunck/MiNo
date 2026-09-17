@@ -425,6 +425,27 @@ pub fn apply_font_to_all(data: &mut AppData) -> usize {
     n
 }
 
+/// 改写一条待办的正文字。**只有 `text` 会被碰到。**
+///
+/// 其余九个字段各有用途，多碰一个都是 bug，而且编译期毫无征兆：
+/// `font` / `font_id` 是这条任务自己的字体快照（碰了表现成「字体自己变了」）、
+/// `created_date` 决定 `[MM-DD]` 前缀、`order` / `created_at` 决定排序、
+/// `completed` / `completed_at` 决定分组与沉底。抽成纯函数就是为了能在 `mod tests`
+/// 里逐字段断言这件事 —— 编辑是那种「只该动一个字段」的操作，而多动一个字段在
+/// 磁盘上的后果是用户的数据被悄悄改写。
+///
+/// 返回是否找到了这条任务。找不到**不是错误**，理由见 `commands::edit_todo`。
+///
+/// 这里刻意**不** trim：trim 和「空就什么都不做」是命令层的语义，埋在两层里
+/// 测试就说不清是谁保证的。
+pub fn set_todo_text(data: &mut AppData, id: &str, text: &str) -> bool {
+    let Some(todo) = data.todos.iter_mut().find(|t| t.id == id) else {
+        return false;
+    };
+    todo.text = text.to_string();
+    true
+}
+
 /// 把导入字体的 family 前缀从 `MiniMemo ` 改写成 `MiNo `（v3 → v4）。
 ///
 /// 这个前缀**写在磁盘上**三处，漏掉任何一处的表现都是「我导入的字体自己变了」：
@@ -935,6 +956,79 @@ mod tests {
 
         assert_eq!(data.todos[0].font, DEFAULT_FONT_CHAIN);
         assert_eq!(data.todos[0].font_id, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 二次编辑（set_todo_text）
+    // -----------------------------------------------------------------------
+
+    /// **本次改动里最重的一条。** 编辑是「只该动 `text` 一个字段」的操作，
+    /// 而多动一个字段在磁盘上的后果是用户的数据被悄悄改写 —— 编译期看不出来，
+    /// 界面上也看不出来（`font` 被覆盖要等下次改全局字体才暴露）。
+    ///
+    /// 所以这里给每个字段都塞一个「非默认且一眼能认出来」的值，改完逐字段比对。
+    #[test]
+    fn set_todo_text_changes_only_the_text() {
+        let mut t = todo("t1", true, 1758000000000, -7);
+        t.text = "原标题".into();
+        t.priority = 3;
+        t.created_date = "2026-09-11".into();
+        t.completed_at = Some(1758000000111);
+        t.archived_at = Some(1758000000222);
+        t.font = "\"MiNo abc12345\", sans-serif".into();
+        t.font_id = Some("abc12345".into());
+
+        let before = t.clone();
+        let mut data = AppData::default();
+        data.todos = vec![t, todo("t2", false, 1, 0)];
+
+        assert!(set_todo_text(&mut data, "t1", "改过的字"));
+
+        assert_eq!(data.todos.len(), 2, "不能增删条目");
+        let after = &data.todos[0];
+        assert_eq!(after.text, "改过的字");
+
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.completed, before.completed);
+        assert_eq!(after.priority, before.priority);
+        assert_eq!(after.created_date, before.created_date);
+        assert_eq!(after.created_at, before.created_at);
+        assert_eq!(after.completed_at, before.completed_at);
+        assert_eq!(after.archived_at, before.archived_at);
+        assert_eq!(after.order, before.order);
+        assert_eq!(after.font, before.font);
+        assert_eq!(after.font_id, before.font_id);
+
+        // 没被点名的那条要原封不动
+        assert_eq!(data.todos[1].text, "t2");
+    }
+
+    /// 找不到 id 不是错误，只是降级 —— 返回 false，且**一条都不许改**。
+    ///
+    /// 这条防的是「用 `find` 找不到就退化成改第一条」那类写法：真要那样，
+    /// 用户编辑 A 的同时删掉 B，落盘顺序一反就会把别的任务改了。
+    #[test]
+    fn set_todo_text_returns_false_for_unknown_id() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("t1", false, 1, 0), todo("t2", false, 2, 0)];
+
+        assert!(!set_todo_text(&mut data, "不存在", "改过的字"));
+
+        assert_eq!(data.todos[0].text, "t1");
+        assert_eq!(data.todos[1].text, "t2");
+    }
+
+    /// `text` 不是排序键，改完再排一次位置必须不动（`mutate` 结尾会再 sort 一次）。
+    #[test]
+    fn set_todo_text_keeps_position_after_sort() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("a", false, 1, 0), todo("b", false, 2, -1)];
+
+        set_todo_text(&mut data, "a", "一个长得多、字典序也完全不同的标题");
+        sort_todos(&mut data.todos);
+
+        assert_eq!(data.todos[0].id, "b", "order 小的还在前面");
+        assert_eq!(data.todos[1].id, "a");
     }
 
     // -----------------------------------------------------------------------

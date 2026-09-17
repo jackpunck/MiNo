@@ -184,6 +184,29 @@ pub fn toggle_todo(app: AppHandle, id: String) -> Result<AppData, String> {
     })
 }
 
+/// 改写一条待办的正文字。
+///
+/// 找不到 id 时**降级为什么都不做**，不报错。编辑期间用户完全可能先点了那一行的
+/// `×`：两条 command 都跑在线程池上，抢 `DATA_LOCK` 的顺序没有保证（见上面那段
+/// 注释）。那时「改文本」这个意图已经没有意义，而 `toggle_todo` 那句
+/// `找不到任务 {id}` 是给**真的**找不到用的 —— 不该在「删除」这个正常动作里弹一句
+/// 带内部 id 的报错给用户看。同 `reorder_todos` 的取舍。
+#[tauri::command(async)]
+pub fn edit_todo(app: AppHandle, id: String, text: String) -> Result<AppData, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        // 同 add_todo：空白不是错误，只是什么都不做。
+        // 前端在保存之前就把「清空」当「恢复原文」处理了，这里是第二道兜底。
+        return Ok(current(&app));
+    }
+
+    mutate(&app, |data| {
+        // 返回值（找没找到）刻意丢掉：找不到就是降级，不是错误，见上面的注释。
+        state::set_todo_text(data, &id, &text);
+        Ok(())
+    })
+}
+
 #[tauri::command(async)]
 pub fn delete_todo(app: AppHandle, id: String) -> Result<AppData, String> {
     mutate(&app, |data| {

@@ -1,6 +1,6 @@
 {
   "name": "mino",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "MiNo - 常驻桌面的极简今日待办浮窗",
   "type": "module",

@@ -1,7 +1,7 @@
 // 窗口行为：焦点、快捷键、置顶按钮、边缘吸附的悬停展开。
 
 import { invoke, call, state } from './state.js';
-import { focusInput } from './todos.js';
+import { focusInput, isEditing, commitEdit } from './todos.js';
 import { closeSettings, openSettings } from './settings.js';
 
 /**
@@ -76,7 +76,7 @@ function enqueue(op) {
  * 只用于记录，Rust 侧不拿它做任何分支。
  */
 function why(tag) {
-  const s = `active=${active},pending=${hasPendingInput()},drag=${windowDragging},full=${fullscreenAhead}`;
+  const s = `active=${active},pending=${hasPendingInput()},drag=${windowDragging},edit=${isEditing()},full=${fullscreenAhead}`;
   return `${tag}(${s})`;
 }
 
@@ -138,9 +138,20 @@ function hasPendingInput() {
  *
  * 回车本身是 keydown，会刷新第二条，于是「正在连续录入」的整段时间都被护住；
  * 停手之后宽限期一过，正常收缩恢复。
+ *
+ * 3. 正在编辑某条待办（双击文字进了输入框）—— 鼠标一离开窗口就把它收走，等于把
+ *    人家改到一半的字吞了。判据本身放在 todos.js 里（`isEditing`）：编辑期间列表
+ *    干脆不重绘，而重绘后「按 edit.id 重建输入框」那条路会把正在组合的 input 从
+ *    DOM 摘掉、炸掉输入法组合态，所以不重绘是刻意选的。
+ *
+ *    ⚠️ 这一条比第一条**宽**：`hasPendingInput` 要求有内容，而 `isEditing` 不要求。
+ *    双击进编辑、把字全清空（= 保存时会恢复原文的那个状态）、然后走人，窗口会
+ *    一直开着不收缩。刻意不收紧成「编辑中且有内容」—— 多一个判据就多一种失败态，
+ *    而多开着一次窗口的代价只是「它没自己收回去」。
  */
 function holdWindowOpen() {
   if (hasPendingInput()) return true;
+  if (isEditing()) return true;
   return performance.now() - lastInputAt < INPUT_GRACE_MS;
 }
 
@@ -283,7 +294,13 @@ export function initWindow() {
 
   // Rust 侧要求我们把输入框聚焦
   listen('mino://focus-input', () => focusInput());
-  listen('mino://open-settings', () => openSettings());
+  // 先把正在编辑的那条存了再开面板。面板是 inset:0 + z-index:20，会把编辑框整个
+  // 盖住 —— 不这么做用户面对的是一个「看不见但还在编辑」的状态，而且 isEditing()
+  // 还拦着自动收缩，窗口也不肯收回去。
+  listen('mino://open-settings', () => {
+    commitEdit(true);
+    openSettings();
+  });
   listen('mino://focus-changed', (e) => setActive(!!e.payload));
 
   inputEl = document.getElementById('input');

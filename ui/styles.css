@@ -23,6 +23,11 @@
   /* 投影方向由 appearance.js 按文字亮度反转：亮字配暗影，暗字配亮光晕 */
   --note-shadow: 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 6px rgba(0, 0, 0, 0.35);
 
+  /* 便签正文的字号与行高，乘积就是 .todo-text 的行盒高（12.5 × 1.45 = 18.125px）。
+     .todo-edit 必须由这两个算出**同一个值** —— 见那条规则里的说明。 */
+  --note-size: 12.5px;
+  --note-lh: 1.45;
+
   /* 无自定义图片时窗口自身的底色（亚克力基底）。固定值，不给用户调 ——
      它和下面的 --mask 是两回事，混用会让「调图片遮罩」意外改掉默认观感。 */
   --app-mask: rgba(18, 18, 18, 0.65);
@@ -325,8 +330,8 @@ body.dragging .todo-text {
   flex: 1;
   min-width: 0;
   font-family: var(--note-font);
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: var(--note-size);
+  line-height: var(--note-lh);
   /* 超长文本用省略号，不允许撑破窗口 */
   white-space: nowrap;
   overflow: hidden;
@@ -343,6 +348,41 @@ body.dragging .todo-text {
   color: var(--note-text-faint);
   font-size: 11px;
   margin-right: 4px;
+}
+
+/* 双击进入的就地编辑框，替换掉上一条 .todo-text。
+ *
+ * 最要紧的是**不能改变行高**：那一行必须还是 28.125px（padding 5px × 2 + 18.125px
+ * 行盒），否则进出编辑态时整个列表会跳一下，而 dnd.js 的换位折算
+ * （Math.round(dy / rowH)）依赖每行严格等高。height 由字号和行高算出，
+ * 别改成别的写法 —— 也别只改 --note-size / --note-lh 中的某一个。
+ * box-sizing 和 padding 已由上面的 `*` 兜住，这里再写一遍是双保险。
+ *
+ * color / text-shadow **必须显式写**：<input> 不继承它们 —— UA 样式表给的是
+ * color: fieldtext / background-color: field，都是元素级声明，作者侧「继承来的值」
+ * 输给它。漏了的话用户选了浅色正文、或配了一张深色背景图时，编辑框里的字
+ * （以及那个白底）会跟周围完全对不上，甚至直接看不见。
+ *
+ * font-family 不在这里写：每条任务有自己的字体，由 JS 逐条 inline 设，同 .todo-text。 */
+.todo-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--note-text);
+  text-shadow: var(--note-shadow);
+  font-size: var(--note-size);
+  line-height: var(--note-lh);
+  height: calc(var(--note-size) * var(--note-lh));
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 已完成项也能编辑（改错别字没有理由禁止），但进编辑态时删除线不能消失 */
+.todo.completed .todo-edit {
+  text-decoration: line-through;
 }
 
 .todo-del {
