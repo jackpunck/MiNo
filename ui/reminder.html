@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>MiNo 提醒</title>
+  <!--
+    独立的样式表，**刻意不复用 styles.css**：那边的 body / #app / :root 规则是给
+    主窗口的（窗口背景、圆角、backdrop-filter 的开关、用户配的便签配色），拉到这个
+    只有一张小卡片的文档里只会互相打架。
+  -->
+  <link rel="stylesheet" href="reminder.css">
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <span>提醒</span>
+      <button id="rem-close" type="button" title="关闭" aria-label="关闭提醒">✕</button>
+    </div>
+    <ul id="rem-list" class="list" aria-label="到点的任务"></ul>
+  </div>
+
+  <!--
+    CSP 是 `script-src 'self'`，所以这里只能是外部文件，不能内联。
+    这个文档**不加载 ui/window.js** —— 主窗口那个挂在 document 上的全局 Esc 在这里
+    不存在，所以本文件里的 Esc 不需要 stopPropagation。
+  -->
+  <script type="module" src="reminder.js"></script>
+</body>
+</html>

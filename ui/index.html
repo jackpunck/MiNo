@@ -184,6 +184,24 @@
 
   <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
 
+  <!--
+    提醒编辑浮层。
+
+    ⚠️ **它必须是 #app 的兄弟节点，绝不能挂到 .todo 那一行下面。** 浮层里每次改动
+    都会 call() 一次，而 call() 返回后 renderList() 会 replaceChildren() 重建整个
+    列表 —— 挂在行里面就会被自己引起的重绘当场销毁（改动生效了，但浮层凭空消失）。
+    CLAUDE.md 第 6、14 条记的拖动与就地编辑守卫是同一类坑，这里更直接：重绘是浮层
+    自己引起来的。位置由 JS 按被点那一行算出来，见 ui/todos.js。
+  -->
+  <div id="remind-pop" class="remind-pop" hidden aria-label="设置提醒">
+    <input id="remind-time" class="remind-time" type="time" step="60" aria-label="提醒时间">
+    <div class="remind-modes">
+      <button class="remind-mode" data-mode="once" type="button">仅一次</button>
+      <button class="remind-mode" data-mode="daily" type="button">每天</button>
+    </div>
+    <button id="remind-clear" class="text-btn" type="button">清除提醒</button>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

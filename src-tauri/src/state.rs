@@ -70,6 +70,23 @@ pub struct Todo {
     /// `ensureFont`，否则那条任务会静默回退成默认字体，用户看到的是「字体自己变了」。
     #[serde(default)]
     pub font_id: Option<String>,
+    /// 提醒时刻 `"HH:MM"`（本地时间，**已补零**）。`None` / 空串 = 没设提醒。
+    ///
+    /// 补零不是洁癖：判「到点没有」用的是字符串比较，`"9:00"` 和 `"10:00"` 比会得出
+    /// 「10 点还没到 9 点」，提醒永远不响。归一化在
+    /// [`crate::reminder::parse_hhmm`] 里，写入前一定会过一遍。
+    #[serde(default)]
+    pub remind_at: Option<String>,
+    /// `""` | `"once"` | `"daily"`。未知值降级为 `"once"`
+    /// （见 [`crate::reminder::mode_or_once`]）—— 一次性的打扰远小于天天误报。
+    #[serde(default)]
+    pub remind_mode: String,
+    /// `once` 模式在哪个本地日期触发（`YYYY-MM-DD`）。空 = 回落到 `created_date`。
+    #[serde(default)]
+    pub remind_date: String,
+    /// 最后一次触发提醒的本地日期。防同一天重复弹，也防重启重放。
+    #[serde(default)]
+    pub reminded_on: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,6 +463,47 @@ pub fn set_todo_text(data: &mut AppData, id: &str, text: &str) -> bool {
     true
 }
 
+/// 设定或清除一条待办的提醒。**只有那四个提醒字段会被碰到。**
+///
+/// 和 [`set_todo_text`] 同一个理由抽成纯函数：这是「只该动四个字段」的操作，
+/// 多动一个（比如顺手把 `completed` 清了）在磁盘上的后果是用户的数据被悄悄改写，
+/// 而编译期毫无征兆。
+///
+/// 几个语义上的决定：
+///
+///   - **`at` 与 `mode` 任一为空 → 四个字段一起清空。** 清提醒只有一个入口，
+///     不必让调用方记住要清几个字段。
+///   - **`reminded_on` 一定要清。** 不清的话，「08:00 已经响过 → 用户把时间改成
+///     20:00」这一天就再也不会响 —— 一个改完没反应的静默失效。
+///   - **写给 `once` 的 `remind_date` 是今天**，因为「定时提醒」的语义就是
+///     「当天到点响一次」（见交互契约）。`daily` 不需要日期，写空。
+///
+/// 返回是否找到了这条任务。找不到**不是错误**，理由同 `set_todo_text`。
+pub fn set_todo_reminder(data: &mut AppData, id: &str, at: &str, mode: &str) -> bool {
+    let Some(todo) = data.todos.iter_mut().find(|t| t.id == id) else {
+        return false;
+    };
+
+    if at.is_empty() || mode.is_empty() {
+        todo.remind_at = None;
+        todo.remind_mode = String::new();
+        todo.remind_date = String::new();
+        todo.reminded_on = String::new();
+        return true;
+    }
+
+    todo.remind_at = Some(at.to_string());
+    todo.remind_mode = mode.to_string();
+    todo.remind_date = if mode == "daily" {
+        String::new()
+    } else {
+        today_string()
+    };
+    // 换了时间就是重新武装，哪怕今天已经响过一次
+    todo.reminded_on = String::new();
+    true
+}
+
 /// 把导入字体的 family 前缀从 `MiniMemo ` 改写成 `MiNo `（v3 → v4）。
 ///
 /// 这个前缀**写在磁盘上**三处，漏掉任何一处的表现都是「我导入的字体自己变了」：
@@ -608,6 +666,10 @@ pub fn save(app: &AppHandle, data: &AppData) -> Result<(), String> {
 ///
 /// 返回归档条数。应用可能休眠或隐藏数天，所以这里只比对日期字符串，
 /// 不做任何基于定时器的假设（规格 §10.2）。
+///
+/// **唯一的例外是每日提醒任务**：它完成之后不归档，而是重置成未完成留在列表里
+/// （见下）。判据用 [`crate::reminder::is_daily`]，和「该不该弹提醒」共用同一个
+/// 定义 —— 两处各写一份迟早会漂。
 pub fn rollover(data: &mut AppData) -> usize {
     let today = today_string();
     if data.settings.last_check_date == today {
@@ -621,6 +683,24 @@ pub fn rollover(data: &mut AppData) -> usize {
         let mut keep = Vec::new();
         for todo in data.todos.drain(..) {
             if todo.completed {
+                // 每日提醒任务：不归档，重置成新的一天。
+                //
+                // **`order` 和 `created_at` 刻意不动。** 用户手动拖出来的顺序是明确
+                // 意图，每天悄悄按「最新」重排等于跟他对抗；任务留在原位才符合预期。
+                //
+                // **`created_date` 必须改成今天**，否则前端会按 `todayKey` 给它挂上
+                // 一个 `[MM-DD]` 前缀，看起来像一条拖了很久的欠账。
+                //
+                // `reminded_on` 不用清：第二天它天然不等于今天，`is_due` 会自己放行。
+                if crate::reminder::is_daily(&todo) {
+                    let mut t = todo;
+                    t.completed = false;
+                    t.completed_at = None;
+                    t.created_date = today.clone();
+                    keep.push(t);
+                    continue;
+                }
+
                 let mut t = todo;
                 t.archived_at = Some(now_ms());
                 data.archives.push(t);
@@ -690,6 +770,10 @@ mod tests {
             order,
             font: String::new(),
             font_id: None,
+            remind_at: None,
+            remind_mode: String::new(),
+            remind_date: String::new(),
+            reminded_on: String::new(),
         }
     }
 
@@ -977,6 +1061,12 @@ mod tests {
         t.archived_at = Some(1758000000222);
         t.font = "\"MiNo abc12345\", sans-serif".into();
         t.font_id = Some("abc12345".into());
+        // 提醒字段同样要在这里有非默认值：改文字顺手把提醒清掉是个很容易犯、
+        // 而且编译期毫无征兆的错 —— 用户会看到「我一改错别字，提醒就没了」。
+        t.remind_at = Some("09:30".into());
+        t.remind_mode = "daily".into();
+        t.remind_date = "2026-09-11".into();
+        t.reminded_on = "2026-09-11".into();
 
         let before = t.clone();
         let mut data = AppData::default();
@@ -998,6 +1088,10 @@ mod tests {
         assert_eq!(after.order, before.order);
         assert_eq!(after.font, before.font);
         assert_eq!(after.font_id, before.font_id);
+        assert_eq!(after.remind_at, before.remind_at);
+        assert_eq!(after.remind_mode, before.remind_mode);
+        assert_eq!(after.remind_date, before.remind_date);
+        assert_eq!(after.reminded_on, before.reminded_on);
 
         // 没被点名的那条要原封不动
         assert_eq!(data.todos[1].text, "t2");
@@ -1130,5 +1224,236 @@ mod tests {
 
         assert_eq!(rename_font_family_prefix(&mut data), 0);
         assert_eq!(data.settings.font_family, "\"Consolas\", monospace");
+    }
+
+    // -----------------------------------------------------------------------
+    // 提醒
+    // -----------------------------------------------------------------------
+
+    /// 数据丢失的回归测试：老 todo 没有那四个提醒键。
+    ///
+    /// 这是本仓库后果最重的一类错误 —— `Todo` 没有容器级 default，字段级
+    /// `#[serde(default)]` 少写一个，整份 data.json 就解析失败，`load()` 会把它
+    /// 改名成 `.broken`，用户看到的是**全部待办凭空消失**，而编译期毫无征兆。
+    #[test]
+    fn legacy_todo_without_reminder_fields_parses() {
+        let json = r#"{
+            "id": "t1", "text": "写周报", "completed": false,
+            "createdDate": "2026-01-01", "createdAt": 1, "order": 0,
+            "font": "", "fontId": null
+        }"#;
+
+        let t: Todo = serde_json::from_str(json).expect("老 todo 必须能解析");
+        assert_eq!(t.remind_at, None);
+        assert_eq!(t.remind_mode, "");
+        assert_eq!(t.remind_date, "");
+        assert_eq!(t.reminded_on, "");
+        assert_eq!(t.text, "写周报");
+    }
+
+    /// 前端读的是 `todo.remindAt` 这一套，键名一旦变了就静默对不上。
+    #[test]
+    fn reminder_fields_serialize_as_camel_case() {
+        let mut t = todo("a", false, 1, 0);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        t.remind_date = "2026-10-13".into();
+        t.reminded_on = "2026-10-13".into();
+
+        let json = serde_json::to_string(&t).unwrap();
+
+        for key in ["remindAt", "remindMode", "remindDate", "remindedOn"] {
+            assert!(json.contains(&format!("\"{key}\"")), "序列化缺少 {key}: {json}");
+        }
+    }
+
+    #[test]
+    fn set_todo_reminder_writes_all_four_fields() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("t1", false, 1, 0)];
+
+        assert!(set_todo_reminder(&mut data, "t1", "09:30", "daily"));
+
+        let t = &data.todos[0];
+        assert_eq!(t.remind_at.as_deref(), Some("09:30"));
+        assert_eq!(t.remind_mode, "daily");
+        assert_eq!(t.remind_date, "", "daily 不需要日期");
+        assert_eq!(t.reminded_on, "", "重新武装");
+    }
+
+    #[test]
+    fn set_todo_reminder_dates_the_once_mode_today() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("t1", false, 1, 0)];
+
+        assert!(set_todo_reminder(&mut data, "t1", "09:30", "once"));
+
+        assert_eq!(data.todos[0].remind_date, today_string());
+    }
+
+    /// 「08:00 已经响过 → 用户改成 20:00」必须在当天重新武装。
+    ///
+    /// 不清 `reminded_on` 的话这一天就再也不会响 —— 一个改完没反应的静默失效。
+    #[test]
+    fn set_todo_reminder_rearms_after_todays_fire() {
+        let mut data = AppData::default();
+        let mut t = todo("t1", false, 1, 0);
+        t.reminded_on = today_string();
+        data.todos = vec![t];
+
+        set_todo_reminder(&mut data, "t1", "20:00", "once");
+
+        assert_eq!(data.todos[0].reminded_on, "");
+    }
+
+    #[test]
+    fn set_todo_reminder_clears_everything() {
+        let mut data = AppData::default();
+        let mut t = todo("t1", false, 1, 0);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        t.remind_date = "2026-10-13".into();
+        t.reminded_on = "2026-10-13".into();
+        data.todos = vec![t];
+
+        // 调用方「清提醒」时两个参数都给空串（命令层会归一化）
+        assert!(set_todo_reminder(&mut data, "t1", "", ""));
+
+        let t = &data.todos[0];
+        assert_eq!(t.remind_at, None);
+        assert_eq!(t.remind_mode, "");
+        assert_eq!(t.remind_date, "");
+        assert_eq!(t.reminded_on, "");
+    }
+
+    /// 只要有一边是空的就当成清除 —— 「半条提醒」没有任何合理语义。
+    #[test]
+    fn set_todo_reminder_treats_a_half_set_as_clear() {
+        let mut data = AppData::default();
+        let mut t = todo("t1", false, 1, 0);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        data.todos = vec![t];
+
+        set_todo_reminder(&mut data, "t1", "10:00", "");
+
+        assert_eq!(data.todos[0].remind_at, None);
+    }
+
+    #[test]
+    fn set_todo_reminder_returns_false_for_unknown_id() {
+        let mut data = AppData::default();
+        let mut t = todo("t1", false, 1, 0);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        data.todos = vec![t];
+
+        assert!(!set_todo_reminder(&mut data, "不存在", "10:00", "daily"));
+
+        // 一条都不许改
+        assert_eq!(data.todos[0].remind_at.as_deref(), Some("09:00"));
+        assert_eq!(data.todos[0].remind_mode, "daily");
+    }
+
+    // -----------------------------------------------------------------------
+    // 跨日归档遇到每日提醒
+    // -----------------------------------------------------------------------
+
+    /// 造一份「昨天已经检查过」的数据，让下一次 `rollover` 真的执行归档。
+    fn rolled_over_from_yesterday(todos: Vec<Todo>) -> AppData {
+        let mut data = AppData::default();
+        data.settings.last_check_date = "2020-01-01".into();
+        data.todos = todos;
+        data
+    }
+
+    /// 每日提醒任务完成后**不归档**，而是重置成今天的新实例。
+    #[test]
+    fn rollover_resets_completed_daily_reminder() {
+        let mut t = todo("habit", true, 111, -5);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        t.completed_at = Some(222);
+        t.created_date = "2019-12-31".into();
+        t.reminded_on = "2019-12-31".into();
+
+        let mut data = rolled_over_from_yesterday(vec![t]);
+        assert_eq!(rollover(&mut data), 0, "重置不算归档");
+
+        assert_eq!(data.todos.len(), 1, "它必须留在列表里");
+        assert!(data.archives.is_empty());
+
+        let t = &data.todos[0];
+        assert!(!t.completed);
+        assert_eq!(t.completed_at, None);
+        assert_eq!(t.created_date, today_string(), "不能挂上过期的日期前缀");
+        // 用户拖出来的顺序不能被每天悄悄冲掉
+        assert_eq!(t.order, -5);
+        assert_eq!(t.created_at, 111);
+        assert_eq!(t.remind_at.as_deref(), Some("09:00"));
+        assert_eq!(t.remind_mode, "daily");
+        assert_eq!(t.reminded_on, "2019-12-31", "不必清：它天然不等于今天");
+    }
+
+    /// 一次性提醒完成后照旧归档 —— 新分支只对每日任务生效。
+    #[test]
+    fn rollover_archives_completed_once_reminder() {
+        let mut t = todo("oneoff", true, 111, -5);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "once".into();
+
+        let mut data = rolled_over_from_yesterday(vec![t]);
+        assert_eq!(rollover(&mut data), 1);
+
+        assert!(data.todos.is_empty());
+        assert_eq!(data.archives.len(), 1);
+        assert_eq!(data.archives[0].id, "oneoff");
+    }
+
+    /// **老数据行为不变**：没有任何提醒字段的已完成任务，一个字节都不该受影响。
+    #[test]
+    fn rollover_archives_legacy_todos_as_before() {
+        let mut data = rolled_over_from_yesterday(vec![
+            todo("done", true, 111, 0),
+            todo("open", false, 222, 1),
+        ]);
+
+        assert_eq!(rollover(&mut data), 1);
+
+        assert_eq!(data.todos.len(), 1);
+        assert_eq!(data.todos[0].id, "open");
+        assert_eq!(data.archives.len(), 1);
+        assert_eq!(data.archives[0].id, "done");
+    }
+
+    /// 未完成的每日任务照旧保留，且**不被重置**（重置只针对「已完成」这个前提）。
+    #[test]
+    fn rollover_leaves_uncompleted_daily_alone() {
+        let mut t = todo("habit", false, 111, -5);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        t.created_date = "2019-12-31".into();
+
+        let mut data = rolled_over_from_yesterday(vec![t]);
+        rollover(&mut data);
+
+        assert_eq!(data.todos.len(), 1);
+        assert_eq!(
+            data.todos[0].created_date, "2019-12-31",
+            "没完成就不重置 —— 它该带着日期前缀显示成欠账"
+        );
+    }
+
+    /// 「daily 但没有时间」是手改文件改出来的畸形数据：它根本不会响，
+    /// 不该拿到免归档的待遇。判据必须同时要求模式和时间。
+    #[test]
+    fn rollover_archives_daily_mode_without_a_time() {
+        let mut t = todo("broken", true, 111, 0);
+        t.remind_mode = "daily".into();
+        t.remind_at = None;
+
+        let mut data = rolled_over_from_yesterday(vec![t]);
+        assert_eq!(rollover(&mut data), 1);
+        assert!(data.todos.is_empty());
     }
 }

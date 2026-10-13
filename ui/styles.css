@@ -412,6 +412,129 @@ body.dragging .todo-text {
   color: #ff8a8a;
 }
 
+/* 提醒铃铛。
+ *
+ * ⚠️ **尺寸必须和 .todo-del 完全一致（18×18），也不能加 margin / gap。**
+ * 行高契约是 28.125px = padding 5×2 + 18.125px 行盒，而 .todo-del 是 18px、
+ * 撑不满行盒；铃铛一旦超过 18.125px 就会把这一行顶高，dnd.js 的
+ * `Math.round(dy / rowH)` 换位折算依赖每行严格等高 —— 撑高一行，整个拖动排序
+ * 都会算错。 */
+.todo-bell {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  /* 没设提醒时只在悬停时出现，平时不干扰阅读（同 .todo-del） */
+  opacity: 0;
+  transition: opacity var(--ease), background var(--ease), color var(--ease);
+}
+
+.todo:hover .todo-bell,
+.todo-bell:focus-visible {
+  opacity: 1;
+}
+
+.todo-bell:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+/* 设了提醒就常驻可见 —— 用户得能一眼看出哪些任务有提醒。
+ *
+ * 每日 / 仅一次的区别走 **background 而不是 color**：铃铛用的是 emoji 字形
+ * （🔔），emoji 自带颜色、`color` 对它无效。背景色两种字形下都成立。 */
+.todo-bell[data-remind] {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.todo-bell[data-remind='daily'] {
+  background: rgba(255, 212, 121, 0.22);
+}
+
+/* 从提醒浮窗点进来时闪一下，告诉用户「就是这一条」。2 秒后由 JS 摘掉 */
+.todo-flash {
+  background: rgba(255, 212, 121, 0.16);
+  transition: background var(--ease-slow);
+}
+
+/* 提醒编辑浮层。
+ *
+ * **它是 #app 的兄弟节点**（同 #settings），不是 .todo 的子节点 —— 理由见
+ * ui/index.html 那段注释：挂在行里会被浮层自己引起的重绘销毁。
+ * z-index 30：在设置面板（20）之上、toast（40）之下。 */
+.remind-pop {
+  position: fixed;
+  z-index: 30;
+  width: 196px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-field);
+  background: rgba(20, 20, 22, 0.96);
+  backdrop-filter: blur(14px);
+}
+
+.remind-pop[hidden] {
+  display: none;
+}
+
+.remind-time {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  /* <input> 不继承 color —— UA 样式表给的是元素级声明，不显式写就看不见字 */
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  color-scheme: dark;
+}
+
+.remind-modes {
+  display: flex;
+  gap: 4px;
+}
+
+.remind-mode {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+}
+
+.remind-mode:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.remind-mode[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: var(--text);
+}
+
+#remind-clear {
+  width: 100%;
+  font-size: 11.5px;
+}
+
 .empty {
   padding: 18px 8px;
   text-align: center;

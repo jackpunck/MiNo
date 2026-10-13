@@ -7,6 +7,10 @@ import { state, call, notify, toast } from './state.js';
 import { isLoaded, DEFAULT_CHAIN } from './fonts.js';
 import { initDrag, cancelDrag } from './dnd.js';
 
+// 提醒高亮用。和 ui/window.js 一样，从全局的 __TAURI__ 拿（没有打包器，
+// 也没有 @tauri-apps/api 这个依赖）。
+const { listen } = window.__TAURI__.event;
+
 /**
  * 今天的本地日期（`YYYY-MM-DD`），与 Rust 的 `state::today_string()` 同源同格式。
  *
@@ -57,6 +61,100 @@ export function isEditing() {
   return edit !== null;
 }
 
+// ---------------------------------------------------------------------------
+// 提醒编辑浮层
+//
+// 浮层本体是 **#app 的兄弟节点**（见 ui/index.html 那段注释），不是 .todo 的子节点
+// —— 浮层里每次改动都会 call()，而 call() 返回后 renderList() 会 replaceChildren()
+// 重建整个列表，挂在行里就会被自己引起的重绘当场销毁。
+//
+// 状态只有 remindFor（那条任务的 id）。**不缓存 todo 对象**：重绘之后它可能已经
+// 不是同一条了，用 id 现查最省心。
+// ---------------------------------------------------------------------------
+
+/** 正在编辑提醒的那条任务 id；浮层关着时为 null。 */
+let remindFor = null;
+
+/** 时间框在「还没设过提醒」时的初值：下一个整点。 */
+function defaultRemindTime() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(now.getHours() + 1, 0, 0, 0);
+
+  // 跨过午夜就退回今天最后一刻。`once` 的日期写的是今天，给一个已经过去的时间
+  // 会让提醒**立刻**弹出 —— 那不是用户点「明天 0 点」的意思。这个问题本身
+  // （一次性的提醒表达不了明天）留给以后，这里只保证不给一个反直觉的初值。
+  if (next.getDate() !== now.getDate()) return '23:59';
+
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(next.getHours())}:${p(next.getMinutes())}`;
+}
+
+/** 把一条任务的提醒状态画到铃铛上。 */
+function applyBellState(bell, todo) {
+  const at = todo.remindAt || '';
+  if (!at) {
+    bell.removeAttribute('data-remind');
+    bell.title = '设置提醒';
+    bell.setAttribute('aria-label', '设置提醒');
+    return;
+  }
+
+  const daily = todo.remindMode === 'daily';
+  bell.dataset.remind = daily ? 'daily' : 'once';
+  const when = daily ? `每天 ${at}` : `今天 ${at}`;
+  bell.title = `提醒：${when}`;
+  bell.setAttribute('aria-label', `提醒：${when}`);
+}
+
+function setPressedMode(mode) {
+  for (const b of document.querySelectorAll('.remind-mode')) {
+    b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+  }
+}
+
+function pressedMode() {
+  const on = document.querySelector('.remind-mode[aria-pressed="true"]');
+  return on ? on.dataset.mode : 'once';
+}
+
+/** 开浮层并把它贴到被点那一行旁边。 */
+function openRemindEditor(todo, anchor) {
+  const pop = document.getElementById('remind-pop');
+  const time = document.getElementById('remind-time');
+
+  remindFor = todo.id;
+  time.value = todo.remindAt || defaultRemindTime();
+  setPressedMode(todo.remindMode === 'daily' ? 'daily' : 'once');
+
+  // 先显示再量尺寸 —— 处于 hidden 时拿不到有意义的高度
+  pop.hidden = false;
+  state.ui.remindOpen = true;
+
+  // 窗口只有 280px 宽，浮层 196px，所以水平方向基本只能贴右边，但要夹紧
+  const r = anchor.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  const maxLeft = window.innerWidth - pr.width - 6;
+  const maxTop = window.innerHeight - pr.height - 6;
+  pop.style.left = `${Math.min(Math.max(6, r.right - pr.width), Math.max(6, maxLeft))}px`;
+  pop.style.top = `${Math.min(r.bottom + 4, Math.max(6, maxTop))}px`;
+}
+
+function closeRemindEditor() {
+  const pop = document.getElementById('remind-pop');
+  if (!pop || pop.hidden) return;
+  pop.hidden = true;
+  state.ui.remindOpen = false;
+  remindFor = null;
+}
+
+/** renderList() 之后调用：被编辑的那条没了（删掉、或别的重绘路径移走）就收起浮层。 */
+function syncRemindEditor() {
+  if (!remindFor) return;
+  if ((state.data.todos || []).some((t) => t.id === remindFor)) return;
+  closeRemindEditor();
+}
+
 function buildItem(todo) {
   const li = document.createElement('li');
   li.className = 'todo' + (todo.completed ? ' completed' : '');
@@ -104,6 +202,20 @@ function buildItem(todo) {
   // 更不碰 DOM 结构 —— 两次 click 命中同一个元素，dblclick 照常成立。
   span.addEventListener('dblclick', () => startEdit(todo, span));
 
+  const bell = document.createElement('button');
+  bell.className = 'todo-bell';
+  bell.type = 'button';
+  bell.textContent = '🔔';
+  applyBellState(bell, todo);
+  bell.addEventListener('click', () => {
+    // 再点一次同一个铃铛就是收起 —— 和 ⚙ 那个按钮同一种手感
+    if (remindFor === todo.id) {
+      closeRemindEditor();
+      return;
+    }
+    openRemindEditor(todo, bell);
+  });
+
   const del = document.createElement('button');
   del.className = 'todo-del';
   del.textContent = '×';
@@ -113,7 +225,8 @@ function buildItem(todo) {
     call('delete_todo', { id: todo.id }).catch(() => {});
   });
 
-  li.append(box, span, del);
+  // 顺序与 .todo 的 flex 布局一致：勾选 / 正文 / 铃铛 / 删除
+  li.append(box, span, bell, del);
   return li;
 }
 
@@ -295,6 +408,10 @@ export function renderList() {
 
   const clearBtn = document.getElementById('btn-clear');
   clearBtn.disabled = done === 0;
+
+  // 被编辑的那条任务可能在别处没了（删除、清空已完成、跨日重置……）。
+  // 浮层在列表之外，不会被 replaceChildren 带走，所以得自己核对一次。
+  syncRemindEditor();
 }
 
 export function initTodos() {
@@ -326,6 +443,83 @@ export function initTodos() {
     if ((state.data.todos || []).some((t) => t.completed)) {
       call('clear_completed').catch(() => {});
     }
+  });
+
+  initRemindEditor();
+}
+
+// ---------------------------------------------------------------------------
+// 提醒浮层的接线
+// ---------------------------------------------------------------------------
+
+/** 提交一次提醒改动。`at` 为空 = 清除（命令层也认这个语义）。 */
+function commitReminder(at, mode) {
+  if (!remindFor) return;
+  call('set_reminder', { id: remindFor, at, mode }).catch(() => {});
+}
+
+function initRemindEditor() {
+  const time = document.getElementById('remind-time');
+
+  // 改动即生效，没有「保存」按钮 —— 这个仓库里没有一个需要二次确认的设置。
+  // 浮层在列表之外，所以这里每次 call() 引起的重绘都不会影响它自己。
+  time.addEventListener('change', () => {
+    if (!remindFor) return;
+    commitReminder(time.value || '', pressedMode());
+  });
+
+  for (const b of document.querySelectorAll('.remind-mode')) {
+    b.addEventListener('click', () => {
+      if (!remindFor) return;
+      setPressedMode(b.dataset.mode);
+      commitReminder(time.value || '', b.dataset.mode);
+    });
+  }
+
+  document.getElementById('remind-clear').addEventListener('click', () => {
+    if (!remindFor) return;
+    // 先收起浮层再把 id 交出去 —— closeRemindEditor 会把 remindFor 清掉
+    const id = remindFor;
+    closeRemindEditor();
+    call('set_reminder', { id, at: '', mode: '' }).catch(() => {});
+  });
+
+  // 点到浮层外就收起。用 mousedown 而不是 click：click 要等鼠标松开，
+  // 中间那段时间用户可能已经点到别的东西上了。
+  document.addEventListener('mousedown', (e) => {
+    if (!remindFor) return;
+    // 可选链：target 理论上可以是 document 这种没有 closest 的节点
+    if (e.target?.closest?.('#remind-pop')) return;
+    // 点铃铛交给它自己的 click —— 那里是「再点一次收起」的切换语义，
+    // 在这里先关掉会让它紧接着又被打开，看着像没反应。
+    if (e.target?.closest?.('.todo-bell')) return;
+    closeRemindEditor();
+  });
+
+  // Esc 收起浮层。
+  //
+  // **不需要 stopPropagation。** 它拦不住 window.js 那条监听器 —— 两个都挂在
+  // 同一个 document 上，而 stopPropagation 只管「继续往外冒」，同元素上的其他
+  // 监听器照跑（那是 stopImmediatePropagation 的事）。所以那边是靠
+  // `state.ui.remindOpen` 主动让路的，见 ui/window.js。
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!remindFor) return;
+    closeRemindEditor();
+  });
+
+  // 提醒高亮：Rust 在用户点浮窗时发过来的。
+  // 找不到那条任务就静默忽略 —— 用户可能刚把它删了，那不是错误。
+  listen('mino://reminder-open', (e) => {
+    const id = String(e.payload ?? '');
+    if (!id) return;
+
+    const li = document.querySelector(`li.todo[data-id="${CSS.escape(id)}"]`);
+    if (!li) return;
+
+    li.classList.add('todo-flash');
+    li.scrollIntoView({ block: 'nearest' });
+    setTimeout(() => li.classList.remove('todo-flash'), 2000);
   });
 }
 

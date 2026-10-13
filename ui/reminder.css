@@ -1,0 +1,145 @@
+/* 提醒浮窗。一个独立文档，刻意不复用 styles.css。
+ *
+ * ⚠️ **下面三个尺寸与 reminder.rs 里的常量是一组，改一处就要改两处。**
+ * 窗口的高度是 Rust 按条数算出来再 set_size 的 —— 算错了内容就会被裁掉
+ * （或者下面露出一块透明区域，而透明区域在 Windows 上仍然吃掉鼠标点击）。
+ *
+ *   --head-h  34px  ←→  reminder.rs 的 POPUP_HDR
+ *   --row-h   30px  ←→  reminder.rs 的 POPUP_ROW
+ *   列表上下 padding 各 7px（合计 14px） ←→  POPUP_PAD
+ */
+
+:root {
+  /* 对齐 styles.css 的窗口 chrome 变量。只取这里真正用到的几个 ——
+     浮窗不用便签配色（--note-*），那是主窗口的事。 */
+  --radius-window: 12px;
+  --border: rgba(255, 255, 255, 0.13);
+  --text: #f5f5f7;
+  --text-dim: rgba(255, 255, 255, 0.6);
+  --text-faint: rgba(255, 255, 255, 0.38);
+
+  --head-h: 34px;
+  --row-h: 30px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  /* 窗口是 transparent 的，body 不能自带底色 —— 否则圆角外面会露出一个方角 */
+  background: transparent;
+  overflow: hidden;
+  /* 窗口 chrome 用系统字体，不跟随用户配的便签字体 */
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  color: var(--text);
+  /* 浮窗不是用来选字的 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+.card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-window);
+  /* 与设置面板同一套观感。这里可以放心用 backdrop-filter：浮窗没有背景图，
+     模糊的是它背后的桌面，正是亚克力该有的样子（主窗口那条「图片模式必须
+     关掉 backdrop-filter」的教训只针对背景图，见 CLAUDE.md 第 7 条）。 */
+  background: rgba(20, 20, 22, 0.92);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+
+.head {
+  flex: 0 0 auto;
+  height: var(--head-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+#rem-close {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+#rem-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.list {
+  flex: 1 1 auto;
+  list-style: none;
+  /* 上下各 7px，合计 14px = reminder.rs 的 POPUP_PAD */
+  padding: 7px 0;
+  overflow: hidden;
+}
+
+.item {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* 圆点：每日的实心、一次性的空心 —— 扫一眼就知道这条会不会明天再来 */
+.dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--text-faint);
+}
+
+.dot.daily {
+  border-color: transparent;
+  background: var(--text-dim);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.3;
+  /* 超长文本用省略号，不允许撑破窗口 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.more {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}

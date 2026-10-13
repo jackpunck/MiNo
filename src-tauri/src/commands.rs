@@ -13,7 +13,8 @@ use std::sync::Mutex;
 use base64::Engine;
 use log::{info, warn};
 use serde::Serialize;
-use tauri::{ipc::Response, AppHandle};
+// `emit` 在 Emitter trait 上，不在 Manager 上 —— 少了它 `app.emit(...)` 是 E0599。
+use tauri::{ipc::Response, AppHandle, Emitter};
 
 use crate::fonts;
 use crate::state::{self, AppData, Position};
@@ -75,6 +76,48 @@ where
     Ok(data)
 }
 
+// ---------------------------------------------------------------------------
+// 给后台线程用的入口
+//
+// `crate::reminder` 的轮询线程需要读数据、也需要写「今天已经提醒过」。它**必须**
+// 走上面这两个入口（它们持有 DATA_LOCK），而不是自己 `state::load` + `state::save`
+// —— 那会把「读 → 改 → 写」的临界区拆开，和正在跑的 command 互相整份覆盖。
+//
+// ⚠️ **这两个函数要顺序调用，不能嵌在同一个 guard 里**：DATA_LOCK 是普通的非重入
+// `Mutex<()>`，嵌套直接死锁。所以它们是两个独立的入口，而不是「一个入口里回调两次」。
+// ---------------------------------------------------------------------------
+
+/// 读一份当前状态快照（含跨日检查与排序）。跑在调用方的线程上。
+pub(crate) fn read_state(app: &AppHandle) -> AppData {
+    current(app)
+}
+
+/// 把这批任务的 `reminded_on` 记成今天。
+///
+/// 拒绝空列表：没有要写的就别去动盘 —— 那次落盘带着一次 fsync，而且会让整个
+/// 文件重写一遍。
+pub(crate) fn mark_reminded(
+    app: &AppHandle,
+    ids: &[String],
+    today: &str,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let ids = ids.to_vec();
+    let today = today.to_string();
+    mutate(app, move |data| {
+        for todo in data.todos.iter_mut() {
+            if ids.iter().any(|i| i == &todo.id) {
+                todo.reminded_on = today.clone();
+            }
+        }
+        Ok(())
+    })
+    .map(|_| ())
+}
+
 fn new_id(prefix: &str) -> String {
     use std::sync::atomic::AtomicU64;
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -129,6 +172,12 @@ pub fn add_todo(app: AppHandle, text: String) -> Result<AppData, String> {
             // 保证 font_family 非空（空值会被补成 DEFAULT_FONT_CHAIN）。
             font: data.settings.font_family.clone(),
             font_id: data.settings.font_id.clone(),
+            // 新任务不带提醒。这里是 `Todo { .. }` 字面量，加字段时编译器会点名 ——
+            // 但本机没有 Rust 工具链，所以这句话是给以后改这里的人看的。
+            remind_at: None,
+            remind_mode: String::new(),
+            remind_date: String::new(),
+            reminded_on: String::new(),
         });
         Ok(())
     })
@@ -205,6 +254,71 @@ pub fn edit_todo(app: AppHandle, id: String, text: String) -> Result<AppData, St
         state::set_todo_text(data, &id, &text);
         Ok(())
     })
+}
+
+/// 设定或清除一条任务的提醒。
+///
+/// `at` 用 `String` 而不是 `Option<String>`：Tauri 对 `Option<T>` 参数要求调用方
+/// **显式传这个键**（键整个缺失是 `missing_arg` 错误，不是 `None`，只有显式传 `null`
+/// 才是 `None`）—— 少一个坑。空串表达「清除」。
+///
+/// **`at` 与 `mode` 都在这里校验，不信 UI。** 渲染层传什么都是不可信输入，而且
+/// `remind_at` 会被拿去和 `%H:%M` 做字符串比较 —— 一个没补零的 `"9:00"` 会让这条
+/// 提醒永远不响（见 `reminder::parse_hhmm` 的注释）。
+///
+/// 找不到 id 时降级为什么都不做，理由同 `edit_todo`。
+#[tauri::command(async)]
+pub fn set_reminder(
+    app: AppHandle,
+    id: String,
+    at: String,
+    mode: String,
+) -> Result<AppData, String> {
+    let mode = if at.trim().is_empty() || mode.trim().is_empty() {
+        // 清除：两个都空就是清除，只有一个空是调用方写错了 —— 一并当成清除，
+        // 因为「半条提醒」没有任何合理语义。
+        String::new()
+    } else {
+        crate::reminder::mode_or_once(mode.trim()).to_string()
+    };
+
+    let at = if mode.is_empty() {
+        String::new()
+    } else {
+        crate::reminder::parse_hhmm(&at)
+            .ok_or_else(|| format!("提醒时间格式不对：{at}"))?
+    };
+
+    mutate(&app, |data| {
+        // 返回值（找没找到）刻意丢掉：找不到就是降级，不是错误。
+        state::set_todo_reminder(data, &id, &at, &mode);
+        Ok(())
+    })
+}
+
+/// 收起提醒浮窗（弹窗里按 Esc 或点 ×）。
+///
+/// 它不碰 `AppData`，所以**不走** `mutate`，也就不需要 `DATA_LOCK`。
+/// `(async)` 让它跑在线程池上，别压主线程。
+#[tauri::command(async)]
+pub fn dismiss_reminder(app: AppHandle) {
+    crate::reminder::hide_popup(&app);
+}
+
+/// 点提醒浮窗：收起它，把主窗口叫到前面，并让那条任务闪一下。
+///
+/// 顺序是先收浮窗、再叫主窗口 —— 反过来的话浮窗会短暂地压在刚被叫出来的主窗口上面。
+#[tauri::command(async)]
+pub fn open_reminder(app: AppHandle, id: String) {
+    crate::reminder::hide_popup(&app);
+
+    window::show_and_focus(&app);
+
+    // 广播给主窗口的前端去高亮。找不到那条任务时前端会静默忽略 ——
+    // 用户可能已经把它删了，那不是错误。
+    if let Err(e) = app.emit("mino://reminder-open", id) {
+        warn!("提醒高亮事件发送失败: {e}");
+    }
 }
 
 #[tauri::command(async)]

@@ -222,13 +222,18 @@ function scheduleCollapse() {
   collapseTimer = setTimeout(() => {
     collapseTimer = null;
 
-    // 设置面板开着、输入框那点事还没完（见 holdWindowOpen）、或者用户正拖着
-    // 窗口时不要收缩。
+    // 设置面板开着、提醒浮层开着、输入框那点事还没完（见 holdWindowOpen）、
+    // 或者用户正拖着窗口时不要收缩。
+    //
+    // 提醒浮层那条的理由和设置面板一样，但多一层：浮层就贴在列表行旁边，
+    // 用户点开它之后的第一个动作往往就是把鼠标移到时间框上 —— 而那一下
+    // 极易越出窗口，正好会武装这条定时器。窗口当着用户的面收走，那个浮层
+    // 就跟着一起消失了。
     //
     // 这里是**重新排程**而不是直接 return：这条 timer 链是自动收缩唯一的触发源，
     // 直接返回等于把它掐断 —— 用户关掉设置面板 / 清空输入框 / 松手之后，窗口就
     // 再也不自动收缩了。重排程本身也构成了对这几个条件的轮询，不需要另开定时器。
-    if (state.ui.settingsOpen || holdWindowOpen() || windowDragging) {
+    if (state.ui.settingsOpen || state.ui.remindOpen || holdWindowOpen() || windowDragging) {
       scheduleCollapse();
       return;
     }
@@ -358,6 +363,15 @@ export function initWindow() {
       closeSettings();
       return;
     }
+
+    // 提醒浮层开着时 Esc 归它（todos.js 那条也是挂在 document 上的监听），
+    // 它自己会收起浮层。
+    //
+    // **这一条必须写在这里，不能指望浮层的监听器靠 stopPropagation 挡住我们。**
+    // 两个监听器挂在**同一个** document 上，而 stopPropagation 只拦「继续往外冒」，
+    // 同元素上的其他监听器照跑不误（那是 stopImmediatePropagation 才管的事）。
+    // 而且焦点不在浮层里时（比如用户点完铃铛没去碰时间框），事件根本不会经过浮层。
+    if (state.ui.remindOpen) return;
 
     // 吸附状态下先脱离边缘，否则窗口收成一条缝后很难再抓回来。
     // 用户主动按的，不受输入框内容或拖动状态的影响。

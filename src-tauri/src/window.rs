@@ -114,7 +114,12 @@ fn default_position(mon_x: i32, mon_y: i32, mon_w: i32, win_w: i32) -> (i32, i32
     (mon_x + mon_w - win_w - 20, mon_y + 80)
 }
 
-fn monitor_of(w: &WebviewWindow) -> Option<tauri::Monitor> {
+/// 窗口所在显示器，拿不到就退回主屏。
+///
+/// `pub(crate)` 是给 `reminder` 用的：它要把浮窗摆到**主窗口所在那台显示器**的正中，
+/// 而显示器的 `position` / `size` 都是物理像素 —— 单位换算是本模块的纪律，不该在
+/// 那边再推一遍（混用会在 125% 缩放的屏幕上差 25%）。
+pub(crate) fn monitor_of(w: &WebviewWindow) -> Option<tauri::Monitor> {
     w.current_monitor()
         .ok()
         .flatten()

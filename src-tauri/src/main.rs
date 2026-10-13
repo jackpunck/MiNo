@@ -5,6 +5,7 @@ mod autostart;
 mod commands;
 mod fonts;
 mod logging;
+mod reminder;
 mod shortcut;
 mod state;
 mod tray;
@@ -35,6 +36,9 @@ fn main() {
             commands::clear_completed,
             commands::reorder_todos,
             commands::edit_todo,
+            commands::set_reminder,
+            commands::dismiss_reminder,
+            commands::open_reminder,
             commands::set_always_on_top,
             commands::hide_window,
             commands::show_window,
@@ -127,39 +131,81 @@ fn main() {
             // 它自己不 panic、不阻塞、失败只记日志，没事可做时一行都不记。
             autostart::self_heal();
 
+            // 提醒调度线程。放在这个位置的理由与上面那条同源：
+            //
+            // 1. **在 logging::init 之后** —— 这条路径唯一的产出就是日志（起线程、
+            //    到点、落盘失败都只记日志）。
+            // 2. **在 window::init 之后** —— 它立刻返回，不影响窗口显示，但排在前面
+            //    只会推迟用户看见窗口。
+            // 3. **在事件循环起来之前** —— 那时不可能有 IPC 跟它抢读同一份数据。
+            //
+            // 它自己不 panic、不阻塞，起不来也只记一条日志（见 reminder::spawn）。
+            reminder::spawn(&handle);
+
             info!("MiNo 启动完成");
             Ok(())
         })
-        .on_window_event(|window, event| match event {
-            WindowEvent::Moved(_) => {
-                window::handle_moved(window.app_handle());
-            }
-            // 把系统级的窗口激活状态推给前端，由前端决定「鼠标扫过屏幕边缘
-            // 要不要展开窗口」（需求 1）。
+        .on_window_event(|window, event| {
+            // ⚠️ **提醒浮窗的事件必须在这里挡掉，不能落到下面主窗口的分支里。**
             //
-            // 这里只发信号、不做决策：收缩要走 state::load（文件 IO），而这个
-            // 回调在主线程上，不能在这里干。emit 只是往 webview 推一条 IPC 消息。
+            // 这个闭包原本建立在「整个应用只有一个 webview（label "main"）」这个
+            // 前提上（本文件里那句注释曾经明写着）。加了第二个窗口之后那个前提就不
+            // 成立了，不挡的话会立刻出三个 bug：
             //
-            // 用 app_handle().emit 而不是 window.emit：AppHandle 确定实现了
-            // Emitter，不必纠结 Window 那边的 trait 覆盖。整个应用只有一个
-            // webview（label "main"），所以不需要判断来源。
-            WindowEvent::Focused(focused) => {
-                // 记一笔「失焦发生过」。这里确实在主线程上写文件，但焦点变化是
-                // 人手动触发的（一次 Alt+Tab 一条），不是 Moved 那种每秒几十次
-                // 的热路径 —— 一次追加写换一条时间线，值。绝不要往这里加
-                // handle_moved 那类高频事件。
-                info!("窗口焦点{}", if *focused { "进入" } else { "离开" });
-                let _ = window.app_handle().emit("mino://focus-changed", *focused);
-            }
-            WindowEvent::CloseRequested { api, .. } => {
-                // ✕ 只隐藏，不退出。真正的退出走托盘菜单。
-                if !state::QUITTING.load(Ordering::SeqCst) {
-                    info!("窗口关闭请求被拦截，改为隐藏");
-                    api.prevent_close();
-                    window::hide(window.app_handle());
+            //   1. **Focused** —— 浮窗的焦点变化会被 emit 成 `mino://focus-changed
+            //      (false)`，主窗口的前端于是以为「用户切走了」，触发自动收缩甚至
+            //      隐藏。表现是：弹一次提醒，主窗口自己躲起来。
+            //   2. **Moved** —— 浮窗的移动喂进 `window::handle_moved`，污染主窗口的
+            //      边缘吸附状态。
+            //   3. **CloseRequested** —— 浮窗被真的销毁，`get_webview_window
+            //      ("reminder")` 之后永远返回 None，**提醒从此静默地永久失效**。
+            //
+            // 所以浮窗只保留「不许被销毁」这一条语义，其余一概丢弃。
+            if window.label() != "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    // 浮窗没有装饰、也就没有关闭按钮，但 Alt+F4 仍然能到这儿。
+                    // 销毁它等于把提醒功能永久关掉，而用户看不到任何迹象。
+                    if !state::QUITTING.load(Ordering::SeqCst) {
+                        api.prevent_close();
+                        if let Some(w) = window.app_handle().get_webview_window("reminder") {
+                            let _ = w.hide();
+                        }
+                    }
                 }
+                return;
             }
-            _ => {}
+
+            match event {
+                WindowEvent::Moved(_) => {
+                    window::handle_moved(window.app_handle());
+                }
+                // 把系统级的窗口激活状态推给前端，由前端决定「鼠标扫过屏幕边缘
+                // 要不要展开窗口」（需求 1）。
+                //
+                // 这里只发信号、不做决策：收缩要走 state::load（文件 IO），而这个
+                // 回调在主线程上，不能在这里干。emit 只是往 webview 推一条 IPC 消息。
+                //
+                // 用 app_handle().emit 而不是 window.emit：AppHandle 确定实现了
+                // Emitter，不必纠结 Window 那边的 trait 覆盖。调用方已经保证这里
+                // 只可能是 label "main" 的那个窗口（见这个闭包开头那道闸）。
+                WindowEvent::Focused(focused) => {
+                    // 记一笔「失焦发生过」。这里确实在主线程上写文件，但焦点变化是
+                    // 人手动触发的（一次 Alt+Tab 一条），不是 Moved 那种每秒几十次
+                    // 的热路径 —— 一次追加写换一条时间线，值。绝不要往这里加
+                    // handle_moved 那类高频事件。
+                    info!("窗口焦点{}", if *focused { "进入" } else { "离开" });
+                    let _ = window.app_handle().emit("mino://focus-changed", *focused);
+                }
+                WindowEvent::CloseRequested { api, .. } => {
+                    // ✕ 只隐藏，不退出。真正的退出走托盘菜单。
+                    if !state::QUITTING.load(Ordering::SeqCst) {
+                        info!("窗口关闭请求被拦截，改为隐藏");
+                        api.prevent_close();
+                        window::hide(window.app_handle());
+                    }
+                }
+                _ => {}
+            }
         })
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败")

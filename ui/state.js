@@ -11,6 +11,9 @@ export const state = {
   data: { version: 1, settings: {}, todos: [], archives: [] },
   ui: {
     settingsOpen: false,
+    // 提醒编辑浮层开着吗。它和 settingsOpen 是并列的一道**自动收缩抑制闸**
+    // （见 ui/window.js）：浮层开着时鼠标移出窗口不该把窗口收走。
+    remindOpen: false,
     fontList: [],
     fontsLoaded: false,
   },
