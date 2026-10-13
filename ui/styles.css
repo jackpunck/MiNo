@@ -488,7 +488,7 @@ body.dragging .todo-text {
   display: none;
 }
 
-.remind-time {
+.remind-input {
   width: 100%;
   padding: 4px 6px;
   border: 1px solid var(--border);
@@ -498,7 +498,14 @@ body.dragging .todo-text {
   color: var(--text);
   font-family: inherit;
   font-size: 12px;
+  /* 让 WebView2 把日历/时刻选择器画成深色，别在深底上弹一个白框 */
   color-scheme: dark;
+}
+
+/* 父容器是 display:flex，会盖掉 [hidden] 的 display:none（同 .slider-row 那个补丁）。
+   每日模式下日期框靠这一条真正收起来。 */
+.remind-input[hidden] {
+  display: none;
 }
 
 .remind-modes {

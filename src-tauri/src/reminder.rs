@@ -30,7 +30,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use log::{info, warn};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -103,6 +103,33 @@ pub fn parse_hhmm(s: &str) -> Option<String> {
     Some(format!("{h:02}:{m:02}"))
 }
 
+/// 校验并归一化一个 `YYYY-MM-DD`。
+///
+/// 交给 chrono 解析而不是手写字节检查 —— 它连「2026-02-30」这种不存在的日子都挡得住，
+/// 而那正是手写最容易漏的一类。
+///
+/// ⚠️ **归一化之后必须还是 10 个字符。** [`is_due`] 判「是不是它那天」用的是
+/// `remind_date == today` 的字符串相等，而 `today` 永远是 10 个字符 —— 一个 5 位年份
+/// 的日期会**永远不匹配、静默地不响**。这是本模块最不该出现的那种失效。
+pub fn parse_ymd(s: &str) -> Option<String> {
+    let d = NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()?;
+    let out = d.format("%Y-%m-%d").to_string();
+    if out.len() == 10 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// `date` 是不是已经过去了。两个都必须是 [`parse_ymd`] 的产物（定长、补零）。
+///
+/// 定长补零的 `YYYY-MM-DD` 字典序就是时序，所以直接比字符串。
+/// 一次性提醒的判据是「只在它那一天响」，排在过去的日期等于永远不会响 ——
+/// 所以写入前必须挡掉，见 `commands::set_reminder`。
+pub fn is_past_date(date: &str, today: &str) -> bool {
+    date < today
+}
+
 /// 把存盘的模式归一成 `"once"` / `"daily"`。
 ///
 /// **认不出来的一律当 `"once"`。** 方向是刻意的：一次性的打扰远小于天天误报。
@@ -168,6 +195,55 @@ pub fn is_due(t: &Todo, today: &str, hhmm: &str) -> bool {
 // ---------------------------------------------------------------------------
 // 调度
 // ---------------------------------------------------------------------------
+
+/// 浮窗的一次性初始化：把它设成**不抢焦点**。
+///
+/// ⚠️ **这一条是实机日志逼出来的，不是预防性的。** 2026-10-13 实机跑出来的原始现象：
+///
+/// ```text
+/// [23:43:54] 提醒触发 1 条
+/// [23:43:54] 窗口焦点离开
+/// [23:43:54] set_edge_collapsed collapsed=true [focus-lost(...)]
+/// [23:44:06] 窗口焦点进入                      ← 12 秒后，正好是 DISPLAY
+/// [23:44:06] set_edge_collapsed collapsed=false [focus-gained(...)]
+/// ```
+///
+/// 浮窗一显示就抢走了焦点，主窗口于是以为用户切走了、当场收成 4px 感应条；浮窗自动
+/// 消失后焦点回来，它又弹开 —— 看着像窗口在抽风。而且那 12 秒里用户在别的程序里敲的
+/// 键**会进到浮窗去**，比收缩本身严重得多。
+///
+/// 原先的对策是「不调 `set_focus()`」，**不够**：Windows 上 `show()` 自己就会激活窗口。
+/// 真正的开关是 `WS_EX_NOACTIVATE` —— tao 的 `set_focusable(false)` 落的正是它
+///（`!WindowFlags::FOCUSABLE => style_ex |= WS_EX_NOACTIVATE`，见 tao 的
+/// `window_state.rs`）。
+///
+/// 在启动时设一次而不是每次 `show()` 前设：tao 的 `set_focusable` 是把操作丢进事件
+/// 循环线程的队列，跟 `show()` 抢顺序没有意义，一次设好最干净。
+pub fn init(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(POPUP_LABEL) else {
+        warn!("找不到提醒浮窗（label {POPUP_LABEL}），它可能会抢走主窗口的焦点");
+        return;
+    };
+
+    if let Err(e) = w.set_focusable(false) {
+        // 失败就是上面那段日志里的现象会回来。不阻断启动，但必须留下痕迹。
+        warn!("提醒浮窗设置成不可聚焦失败: {e}");
+    }
+}
+
+/// 提醒浮窗正显示着吗。
+///
+/// 给 `main.rs` 的 `WindowEvent::Focused` 用：浮窗挤掉主窗口焦点的那一下不该被当成
+/// 「用户切走了」。锁里只有一个 `Option<Instant>`，不碰文件，主线程上调用是安全的。
+///
+/// 这是**第二道网** —— 第一道是 [`init`] 里的 `set_focusable(false)`，正常情况下
+/// 主窗口根本不会失去焦点，这里也就不该被触发。
+pub fn popup_is_showing() -> bool {
+    HIDE_AT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+}
 
 /// 起调度线程。**失败只记日志，不阻断启动** —— `setup()` 的每一步都要能降级。
 pub fn spawn(app: &AppHandle) {
@@ -414,6 +490,35 @@ mod tests {
         ] {
             assert!(parse_hhmm(bad).is_none(), "{bad:?} 不该被接受");
         }
+    }
+
+    #[test]
+    fn ymd_pads_and_normalizes() {
+        assert_eq!(parse_ymd("2026-10-17").as_deref(), Some("2026-10-17"));
+        assert_eq!(parse_ymd("2026-1-5").as_deref(), Some("2026-01-05"));
+        assert_eq!(parse_ymd(" 2026-10-17 ").as_deref(), Some("2026-10-17"));
+    }
+
+    #[test]
+    fn ymd_rejects_everything_else() {
+        for bad in [
+            "", "2026-10", "2026/10/17", "26-10-17",
+            // 不存在的日子 —— 手写字节检查最容易放过这些
+            "2026-02-30", "2026-13-01", "2026-00-10", "2026-10-32",
+            // 5 位年份：能解析出来，但归一化后不是 10 字符，会让 is_due 永远判不中
+            "12026-10-17",
+        ] {
+            assert!(parse_ymd(bad).is_none(), "{bad:?} 不该被接受");
+        }
+    }
+
+    #[test]
+    fn past_date_comparison_uses_calendar_order() {
+        assert!(is_past_date("2026-10-13", "2026-10-14"));
+        assert!(is_past_date("2025-12-31", "2026-01-01"), "跨年");
+        assert!(!is_past_date("2026-10-14", "2026-10-14"), "今天不算过去");
+        assert!(!is_past_date("2026-10-15", "2026-10-14"));
+        assert!(!is_past_date("2026-11-01", "2026-10-31"), "跨月");
     }
 
     #[test]

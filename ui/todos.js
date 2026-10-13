@@ -90,21 +90,46 @@ function defaultRemindTime() {
   return `${p(next.getHours())}:${p(next.getMinutes())}`;
 }
 
+/**
+ * 这条任务的提醒该怎么念（`每天 09:00` / `今天 09:00` / `10-17 09:00`）。
+ *
+ * 一次性提醒的日期可能不是今天 —— 「周一建的任务，周五早上九点提醒我」是它的
+ * 主要用法。日期前缀用 `MM-DD`，和列表里那个 `.stale` 前缀同一套写法。
+ */
+function remindLabel(todo) {
+  const at = todo.remindAt || '';
+  if (todo.remindMode === 'daily') return `每天 ${at}`;
+
+  // remindDate 为空只有手改文件能造出来，回落到 createdDate 让念法不至于空着
+  const day = todo.remindDate || todo.createdDate || '';
+  if (!day || day === todayKey()) return `今天 ${at}`;
+  return `${day.slice(5)} ${at}`;
+}
+
 /** 把一条任务的提醒状态画到铃铛上。 */
 function applyBellState(bell, todo) {
-  const at = todo.remindAt || '';
-  if (!at) {
+  if (!todo.remindAt) {
     bell.removeAttribute('data-remind');
     bell.title = '设置提醒';
     bell.setAttribute('aria-label', '设置提醒');
     return;
   }
 
-  const daily = todo.remindMode === 'daily';
-  bell.dataset.remind = daily ? 'daily' : 'once';
-  const when = daily ? `每天 ${at}` : `今天 ${at}`;
+  bell.dataset.remind = todo.remindMode === 'daily' ? 'daily' : 'once';
+  const when = remindLabel(todo);
   bell.title = `提醒：${when}`;
   bell.setAttribute('aria-label', `提醒：${when}`);
+}
+
+/**
+ * 这条任务带提醒吗。
+ *
+ * 带提醒的**不显示** `[MM-DD]` 那个日期前缀。前缀的语义是「这条你昨天没做完」——
+ * 一个积压标记。而设了提醒的任务是**排期**：周一为周五建的任务在周二显示
+ * `[10-13]`，会让人以为它已经欠了三天。两种模式一视同仁，所以这里只看有没有时间。
+ */
+function hasReminder(todo) {
+  return !!todo.remindAt;
 }
 
 function setPressedMode(mode) {
@@ -118,14 +143,31 @@ function pressedMode() {
   return on ? on.dataset.mode : 'once';
 }
 
+/** 切模式时同步按钮的按下态，并收放日期框。 */
+function setPopMode(mode) {
+  setPressedMode(mode);
+  // 每日模式没有起始日期的概念 —— 收起来，顺带说明两种模式的区别不只是重复方式
+  document.getElementById('remind-date').hidden = mode === 'daily';
+}
+
 /** 开浮层并把它贴到被点那一行旁边。 */
 function openRemindEditor(todo, anchor) {
   const pop = document.getElementById('remind-pop');
   const time = document.getElementById('remind-time');
+  const date = document.getElementById('remind-date');
 
   remindFor = todo.id;
   time.value = todo.remindAt || defaultRemindTime();
-  setPressedMode(todo.remindMode === 'daily' ? 'daily' : 'once');
+
+  // 日期框不接受过去的日期（后端也会拒，但让用户先选到再被驳回是很差的体验）。
+  // 一条已经响过的一次性提醒，它的 remindDate 就是过去 —— 这时回落到今天，
+  // 正好是「想再设一次」的默认意图。
+  const today = todayKey();
+  const stored = todo.remindDate || '';
+  date.min = today;
+  date.value = stored && stored >= today ? stored : today;
+
+  setPopMode(todo.remindMode === 'daily' ? 'daily' : 'once');
 
   // 先显示再量尺寸 —— 处于 hidden 时拿不到有意义的高度
   pop.hidden = false;
@@ -184,9 +226,10 @@ function buildItem(todo) {
   // 有注入风险的写法，前者是 CSSOM 属性赋值，非法值会被解析器直接丢弃。
   span.style.setProperty('font-family', fontChainFor(todo));
 
-  // 历史遗留的未完成项（创建日期早于今天）加一个轻量前缀
+  // 历史遗留的未完成项（创建日期早于今天）加一个轻量前缀。
+  // 带提醒的不加 —— 那是排期不是积压，见 hasReminder。
   const created = todo.createdDate || '';
-  if (!todo.completed && created && created !== todayKey()) {
+  if (!todo.completed && created && created !== todayKey() && !hasReminder(todo)) {
     const stale = document.createElement('span');
     stale.className = 'stale';
     stale.textContent = `[${created.slice(5)}]`;
@@ -452,27 +495,37 @@ export function initTodos() {
 // 提醒浮层的接线
 // ---------------------------------------------------------------------------
 
-/** 提交一次提醒改动。`at` 为空 = 清除（命令层也认这个语义）。 */
-function commitReminder(at, mode) {
+/**
+ * 提交一次提醒改动。两个输入框的值都从 DOM 现读。
+ *
+ * `at` 为空 = 清除（命令层也认这个语义）。每日模式**不传日期**：那边没有起始
+ * 日期的概念，传一个陈旧的日期进去只会被后端丢掉，不如一开始就不发。
+ */
+function commitReminder(mode) {
   if (!remindFor) return;
-  call('set_reminder', { id: remindFor, at, mode }).catch(() => {});
+  const at = document.getElementById('remind-time').value || '';
+  const date = mode === 'daily' ? '' : document.getElementById('remind-date').value || '';
+  call('set_reminder', { id: remindFor, at, mode, date }).catch(() => {});
 }
 
 function initRemindEditor() {
   const time = document.getElementById('remind-time');
+  const date = document.getElementById('remind-date');
 
   // 改动即生效，没有「保存」按钮 —— 这个仓库里没有一个需要二次确认的设置。
   // 浮层在列表之外，所以这里每次 call() 引起的重绘都不会影响它自己。
-  time.addEventListener('change', () => {
-    if (!remindFor) return;
-    commitReminder(time.value || '', pressedMode());
-  });
+  for (const el of [time, date]) {
+    el.addEventListener('change', () => {
+      if (!remindFor) return;
+      commitReminder(pressedMode());
+    });
+  }
 
   for (const b of document.querySelectorAll('.remind-mode')) {
     b.addEventListener('click', () => {
       if (!remindFor) return;
-      setPressedMode(b.dataset.mode);
-      commitReminder(time.value || '', b.dataset.mode);
+      setPopMode(b.dataset.mode);
+      commitReminder(b.dataset.mode);
     });
   }
 
@@ -481,7 +534,7 @@ function initRemindEditor() {
     // 先收起浮层再把 id 交出去 —— closeRemindEditor 会把 remindFor 清掉
     const id = remindFor;
     closeRemindEditor();
-    call('set_reminder', { id, at: '', mode: '' }).catch(() => {});
+    call('set_reminder', { id, at: '', mode: '', date: '' }).catch(() => {});
   });
 
   // 点到浮层外就收起。用 mousedown 而不是 click：click 要等鼠标松开，

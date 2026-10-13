@@ -194,7 +194,11 @@
     自己引起来的。位置由 JS 按被点那一行算出来，见 ui/todos.js。
   -->
   <div id="remind-pop" class="remind-pop" hidden aria-label="设置提醒">
-    <input id="remind-time" class="remind-time" type="time" step="60" aria-label="提醒时间">
+    <!-- 日期只在「仅一次」下显示：每日任务从今天起，没有起始日期的概念。
+         切换模式时由 JS 收放它，见 ui/todos.js 的 setPopMode。
+         `min` 也由 JS 设成今天 —— 选一个过去的日期只会被后端拒绝。 -->
+    <input id="remind-date" class="remind-input" type="date" aria-label="提醒日期">
+    <input id="remind-time" class="remind-input" type="time" step="60" aria-label="提醒时间">
     <div class="remind-modes">
       <button class="remind-mode" data-mode="once" type="button">仅一次</button>
       <button class="remind-mode" data-mode="daily" type="button">每天</button>

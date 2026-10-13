@@ -62,6 +62,12 @@ document.getElementById('rem-close').addEventListener('click', () => {
   invoke('dismiss_reminder').catch(() => {});
 });
 
+// Esc 收起浮窗。
+//
+// ⚠️ **这条实际上永远不会触发**：浮窗设了 `set_focusable(false)`（WS_EX_NOACTIVATE），
+// 它拿不到键盘焦点，这个文档也就永远收不到 keydown。留着它是因为那个设置一旦哪天被
+// 拿掉，这里就是对的 —— 而不是一个静默失效。Esc 仍然照常在用户原来那个程序里生效，
+// 这正是我们想要的：在编辑器里按 Esc 不该关掉 MiNo 的提醒。
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   invoke('dismiss_reminder').catch(() => {});

@@ -475,11 +475,14 @@ pub fn set_todo_text(data: &mut AppData, id: &str, text: &str) -> bool {
 ///     不必让调用方记住要清几个字段。
 ///   - **`reminded_on` 一定要清。** 不清的话，「08:00 已经响过 → 用户把时间改成
 ///     20:00」这一天就再也不会响 —— 一个改完没反应的静默失效。
-///   - **写给 `once` 的 `remind_date` 是今天**，因为「定时提醒」的语义就是
-///     「当天到点响一次」（见交互契约）。`daily` 不需要日期，写空。
+///   - **`once` 的 `remind_date` 是调用方给的日期**（可以是将来的某一天 ——
+///     「周一建的任务，周五早上九点提醒我」）。`date` 为空时回落到今天，
+///     好让「就在今天」这个常见情况不必多传一个值。
+///   - **`daily` 不需要日期**，`remind_date` 一律写空：每日任务从今天起、
+///     没有起始日期的概念。
 ///
 /// 返回是否找到了这条任务。找不到**不是错误**，理由同 `set_todo_text`。
-pub fn set_todo_reminder(data: &mut AppData, id: &str, at: &str, mode: &str) -> bool {
+pub fn set_todo_reminder(data: &mut AppData, id: &str, at: &str, mode: &str, date: &str) -> bool {
     let Some(todo) = data.todos.iter_mut().find(|t| t.id == id) else {
         return false;
     };
@@ -496,8 +499,10 @@ pub fn set_todo_reminder(data: &mut AppData, id: &str, at: &str, mode: &str) -> 
     todo.remind_mode = mode.to_string();
     todo.remind_date = if mode == "daily" {
         String::new()
-    } else {
+    } else if date.is_empty() {
         today_string()
+    } else {
+        date.to_string()
     };
     // 换了时间就是重新武装，哪怕今天已经响过一次
     todo.reminded_on = String::new();
@@ -1272,7 +1277,7 @@ mod tests {
         let mut data = AppData::default();
         data.todos = vec![todo("t1", false, 1, 0)];
 
-        assert!(set_todo_reminder(&mut data, "t1", "09:30", "daily"));
+        assert!(set_todo_reminder(&mut data, "t1", "09:30", "daily", ""));
 
         let t = &data.todos[0];
         assert_eq!(t.remind_at.as_deref(), Some("09:30"));
@@ -1286,9 +1291,32 @@ mod tests {
         let mut data = AppData::default();
         data.todos = vec![todo("t1", false, 1, 0)];
 
-        assert!(set_todo_reminder(&mut data, "t1", "09:30", "once"));
+        assert!(set_todo_reminder(&mut data, "t1", "09:30", "once", ""));
 
         assert_eq!(data.todos[0].remind_date, today_string());
+    }
+
+    /// 周一建的任务、要它周五早上九点响 —— 日期必须是调用方给的那天，不是今天。
+    #[test]
+    fn set_todo_reminder_keeps_a_future_date() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("t1", false, 1, 0)];
+
+        assert!(set_todo_reminder(&mut data, "t1", "09:00", "once", "2027-01-05"));
+
+        assert_eq!(data.todos[0].remind_date, "2027-01-05");
+    }
+
+    /// 每日模式没有「起始日期」的概念，传进来的日期必须被丢掉 ——
+    /// 留着它会让 `is_due` 走 once 那条分支，每日提醒就变成一次性的了。
+    #[test]
+    fn set_todo_reminder_drops_the_date_for_daily() {
+        let mut data = AppData::default();
+        data.todos = vec![todo("t1", false, 1, 0)];
+
+        assert!(set_todo_reminder(&mut data, "t1", "09:00", "daily", "2027-01-05"));
+
+        assert_eq!(data.todos[0].remind_date, "");
     }
 
     /// 「08:00 已经响过 → 用户改成 20:00」必须在当天重新武装。
@@ -1301,7 +1329,7 @@ mod tests {
         t.reminded_on = today_string();
         data.todos = vec![t];
 
-        set_todo_reminder(&mut data, "t1", "20:00", "once");
+        set_todo_reminder(&mut data, "t1", "20:00", "once", "");
 
         assert_eq!(data.todos[0].reminded_on, "");
     }
@@ -1317,7 +1345,7 @@ mod tests {
         data.todos = vec![t];
 
         // 调用方「清提醒」时两个参数都给空串（命令层会归一化）
-        assert!(set_todo_reminder(&mut data, "t1", "", ""));
+        assert!(set_todo_reminder(&mut data, "t1", "", "", ""));
 
         let t = &data.todos[0];
         assert_eq!(t.remind_at, None);
@@ -1335,7 +1363,7 @@ mod tests {
         t.remind_mode = "daily".into();
         data.todos = vec![t];
 
-        set_todo_reminder(&mut data, "t1", "10:00", "");
+        set_todo_reminder(&mut data, "t1", "10:00", "", "");
 
         assert_eq!(data.todos[0].remind_at, None);
     }
@@ -1348,7 +1376,7 @@ mod tests {
         t.remind_mode = "daily".into();
         data.todos = vec![t];
 
-        assert!(!set_todo_reminder(&mut data, "不存在", "10:00", "daily"));
+        assert!(!set_todo_reminder(&mut data, "不存在", "10:00", "daily", ""));
 
         // 一条都不许改
         assert_eq!(data.todos[0].remind_at.as_deref(), Some("09:00"));

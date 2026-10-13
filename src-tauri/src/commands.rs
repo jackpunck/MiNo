@@ -258,13 +258,14 @@ pub fn edit_todo(app: AppHandle, id: String, text: String) -> Result<AppData, St
 
 /// 设定或清除一条任务的提醒。
 ///
-/// `at` 用 `String` 而不是 `Option<String>`：Tauri 对 `Option<T>` 参数要求调用方
-/// **显式传这个键**（键整个缺失是 `missing_arg` 错误，不是 `None`，只有显式传 `null`
-/// 才是 `None`）—— 少一个坑。空串表达「清除」。
+/// `at` / `date` 用 `String` 而不是 `Option<String>`：Tauri 对 `Option<T>` 参数要求
+/// 调用方**显式传这个键**（键整个缺失是 `missing_arg` 错误，不是 `None`，只有显式传
+/// `null` 才是 `None`）—— 少一个坑。空串在这里有两种意思，都很好猜：`at` 空 = 清除，
+/// `date` 空 = 就用今天。
 ///
-/// **`at` 与 `mode` 都在这里校验，不信 UI。** 渲染层传什么都是不可信输入，而且
-/// `remind_at` 会被拿去和 `%H:%M` 做字符串比较 —— 一个没补零的 `"9:00"` 会让这条
-/// 提醒永远不响（见 `reminder::parse_hhmm` 的注释）。
+/// **三个参数都在这里校验，不信 UI。** 渲染层传什么都是不可信输入，而且这两个值都会
+/// 被拿去和日期/时刻做**字符串比较** —— 一个没补零的 `"9:00"` 或一个 5 位年份的日期
+/// 会让这条提醒永远不响，且完全无声（见 `reminder::parse_hhmm` / `parse_ymd`）。
 ///
 /// 找不到 id 时降级为什么都不做，理由同 `edit_todo`。
 #[tauri::command(async)]
@@ -273,6 +274,7 @@ pub fn set_reminder(
     id: String,
     at: String,
     mode: String,
+    date: String,
 ) -> Result<AppData, String> {
     let mode = if at.trim().is_empty() || mode.trim().is_empty() {
         // 清除：两个都空就是清除，只有一个空是调用方写错了 —— 一并当成清除，
@@ -289,9 +291,27 @@ pub fn set_reminder(
             .ok_or_else(|| format!("提醒时间格式不对：{at}"))?
     };
 
+    // `daily` 不参与日期：每日任务从今天起，没有起始日期的概念。这里连校验都跳过，
+    // 免得 UI 传了个陈旧的日期进来把一次有效的每日提醒否掉。
+    let date = if mode.is_empty() || mode == "daily" || date.trim().is_empty() {
+        String::new()
+    } else {
+        let d = crate::reminder::parse_ymd(&date)
+            .ok_or_else(|| format!("提醒日期格式不对：{date}"))?;
+
+        // 一次性提醒的判据是「只在它那一天响」。排在过去的日期等于永远不会响 ——
+        // 当场拒绝，不要留一个静默失效让用户以后自己猜「怎么没提醒我」。
+        // 注意只挡日期不挡时刻：今天的 09:00 在 10:00 设下仍然有效，它会**立刻**响
+        //（那正是补提醒的语义）。
+        if crate::reminder::is_past_date(&d, &state::today_string()) {
+            return Err("提醒日期已经过去了".into());
+        }
+        d
+    };
+
     mutate(&app, |data| {
         // 返回值（找没找到）刻意丢掉：找不到就是降级，不是错误。
-        state::set_todo_reminder(data, &id, &at, &mode);
+        state::set_todo_reminder(data, &id, &at, &mode, &date);
         Ok(())
     })
 }
