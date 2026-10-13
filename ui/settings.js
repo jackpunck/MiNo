@@ -108,6 +108,61 @@ function parseCurrentColor(value) {
 }
 
 // ---------------------------------------------------------------------------
+// 开机自启动
+// ---------------------------------------------------------------------------
+
+/**
+ * 把后端读回来的自启动状态画到开关上。
+ *
+ * 不是简单的一个 bool：任务管理器那边有一个独立的「启动项已禁用」叠加层
+ * （StartupApproved），此时 Run 项还在，但我们不能显示成「已开启」。
+ * Rust 侧已经把三态压成 enabled / blocked 两个布尔，这里只做映射。
+ */
+function renderAutostart(a) {
+  // 整个字段缺失（runtime_info 失败）时保持「—」和 disabled：开关宁可点不动，
+  // 也不显示一个可能骗人的状态。方向与 autostart.rs 里那条失败方向一致。
+  if (!a) return;
+
+  const btn = document.getElementById('btn-autostart');
+  const value = document.getElementById('autostart-value');
+  const hint = document.getElementById('autostart-hint');
+
+  btn.setAttribute('aria-checked', String(!!a.enabled));
+  btn.disabled = false;
+  delete hint.dataset.kind;
+
+  if (a.error) {
+    // 读不到注册表就不猜。读数写「—」而不是「已关闭」—— 后者是一个我们并沒
+    // 确认的结论。开关留在「关」的位置，点一下正好是修复动作。
+    value.textContent = '—';
+    hint.textContent = `读不到注册表：${a.error}`;
+    hint.dataset.kind = 'error';
+    return;
+  }
+
+  if (a.blocked) {
+    value.textContent = '已关闭';
+    hint.textContent = '被「任务管理器 → 启动应用」禁用了，再点一下开关可以恢复。';
+    return;
+  }
+
+  if (a.enabled) {
+    value.textContent = '已开启';
+    if (a.stale) {
+      // 启动自愈没能改过来。必须说出来 —— 否则用户以为自启动是好的
+      hint.textContent = '启动项指向的不是当前这个 MiNo.exe，没能自动改过来。';
+      hint.dataset.kind = 'error';
+    } else {
+      hint.textContent = '开机后会像平时一样显示窗口（不会静默驻留）。';
+    }
+    return;
+  }
+
+  value.textContent = '已关闭';
+  hint.textContent = '';
+}
+
+// ---------------------------------------------------------------------------
 // 字体列表
 // ---------------------------------------------------------------------------
 
@@ -283,6 +338,10 @@ async function renderInfo() {
     const version = document.getElementById('app-version');
     version.textContent = `MiNo v${info.version}`;
     currentVersion = info.version;
+
+    // 开机自启动。注册表是唯一权威，每次打开面板都重读一次 —— 用户可能刚在
+    // 任务管理器里改过，缓存这个值没有任何意义。
+    renderAutostart(info.autostart);
   } catch {
     /* 信息区是锦上添花，失败就不显示 */
   }
@@ -379,6 +438,39 @@ export function initSettings() {
 
   document.getElementById('btn-bg-import').addEventListener('click', () => {
     document.getElementById('file-bg').click();
+  });
+
+  // 开机自启动。
+  // 命令名写成裸字符串字面量：tools/check-commands.mjs 靠正则扫这个字面量，
+  // 传参形式会让这个名字悄悄逃过「未注册 command」的静态校验。
+  document.getElementById('btn-autostart').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+
+    // 取反当前**显示**的状态。Rust 返回的是写完重读的真实状态，所以写失败、或者
+    // 被组策略锁着改不动时，界面会自己弹回真实位置，不会停在乐观的假象上 ——
+    // 这正是 set_autostart 返回状态而不是 bool 的理由。
+    const next = btn.getAttribute('aria-checked') !== 'true';
+
+    btn.disabled = true;
+    try {
+      // call() 不会把结果写回 state.data：那一步只在返回值带 todos 数组时发生
+      // （ui/state.js），所以这里不触发重绘，开关自己画就行。
+      const status = await call('set_autostart', { enabled: next });
+      renderAutostart(status);
+
+      if (status.error) {
+        toast(`开机自启动设置失败：${status.error}`);
+      } else if (next && !status.enabled) {
+        // 想开却没开成：多半被任务管理器或系统策略锁着。说清楚该去哪儿，
+        // 别让用户对着一个点不动的开关猜。
+        toast('没能打开 —— 可能被任务管理器或系统策略锁着');
+      }
+    } catch {
+      // IPC 层失败，call() 已经弹过提示。这里**不**改开关的位置：我们不知道
+      // 真实状态，保持原样比猜一个更诚实，下次开面板会重读。
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   // 检查更新。只在用户点的时候联网 —— 不做启动自动检查：那会让「启动就联网」

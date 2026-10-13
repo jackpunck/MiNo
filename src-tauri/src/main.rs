@@ -1,6 +1,7 @@
 // 发布版不弹控制台窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod commands;
 mod fonts;
 mod logging;
@@ -55,6 +56,7 @@ fn main() {
             commands::reset_font,
             commands::apply_font_to_all,
             commands::runtime_info,
+            commands::set_autostart,
             commands::foreground_is_fullscreen,
             commands::open_release_page,
             commands::save_window_position,
@@ -107,6 +109,24 @@ fn main() {
             }
 
             window::init(&handle);
+
+            // 开机自启动的路径自愈（便携版被挪了位置时把注册表里那条改过来）。
+            // 放在这里的三条理由，缺一条都会挪错位置：
+            //
+            // 1. **必须在 logging::init 之后。** 这条路径唯一的产出就是日志 ——
+            //    它没有界面、也没有返回值。早于 logger 的 info!/warn! 会被整个丢掉
+            //    （上面「接管数据目录」踩的就是这个坑，而那条 warn 是用户唯一的
+            //    救援线索）。也正因为在 logger 之后，它才不需要 adopt 那套
+            //    「把结论带出来再记」的写法。
+            // 2. **放在 window::init 之后。** 注册表调用是毫秒级，但它不受我们
+            //    控制（可能被杀软或注册表重定向钩住）。它不影响窗口显示，放前面
+            //    只会推迟用户看见窗口。
+            // 3. **放在事件循环起来之前。** 那时不可能有 IPC 进来，前端不会和它
+            //    抢读同一个状态。
+            //
+            // 它自己不 panic、不阻塞、失败只记日志，没事可做时一行都不记。
+            autostart::self_heal();
+
             info!("MiNo 启动完成");
             Ok(())
         })

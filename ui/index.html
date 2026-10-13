@@ -136,6 +136,28 @@
       <div class="field-label">快捷键</div>
       <div class="hint" id="shortcut-hint">—</div>
 
+      <!--
+        开机自启动。整行复用 .slider-row：它已经是「控件 + 读数」的 flex 行，而且
+        自带 [hidden] 的补丁（flex 会盖掉 [hidden] 的 display:none，见 styles.css）。
+        新起一个 display:flex 的类是自找那个坑。
+
+        开关初值 disabled + 读数「—」是刻意的：状态只能从注册表读出来，读到之前
+        不能显示一个可能骗人的值。面板里其它信息位（快捷键 / 数据目录 / 版本）
+        同样先写「—」，同一个约定。
+      -->
+      <div class="field-label">开机自启动</div>
+      <div class="slider-row" id="autostart-row">
+        <button id="btn-autostart" class="switch" type="button" role="switch"
+                aria-checked="false" aria-label="开机自启动" disabled>
+          <span class="switch-knob" aria-hidden="true"></span>
+        </button>
+        <span id="autostart-value" class="slider-value">—</span>
+      </div>
+      <!-- 这一行必须写成单行、里面一个字都不能有（含缩进和换行）：CSS 的 :empty
+           只认「一个子节点都没有」，一个空白文本节点就会让它失效，于是面板里
+           多出一条空白行。同 #update-status 的写法。 -->
+      <div class="hint" id="autostart-hint"></div>
+
       <div class="field-label">数据目录</div>
       <div class="hint path" id="data-dir">—</div>
 

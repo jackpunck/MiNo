@@ -640,6 +640,9 @@ pub struct RuntimeInfo {
     pub shortcut_active: bool,
     pub today: String,
     pub version: String,
+    /// 开机自启动状态。**它不在 `Settings` 里** —— 注册表才是唯一权威，
+    /// 见 [crate::autostart] 的模块注释。
+    pub autostart: crate::autostart::Status,
 }
 
 #[tauri::command(async)]
@@ -653,7 +656,21 @@ pub fn runtime_info(app: AppHandle) -> RuntimeInfo {
         shortcut_active: crate::shortcut::REGISTERED.load(Ordering::SeqCst),
         today: state::today_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        autostart: crate::autostart::status(),
     }
+}
+
+/// 打开/关闭开机自启动。返回**写完重读之后**的真实状态。
+///
+/// 为什么返回状态而不是 `Result`：前端只需要一条路径 —— 「拿返回的状态去渲染」。
+/// 写失败时返回的是「真实状态 + error 文案」，开关会自己弹回真实位置，而不是停在
+/// 一个乐观的假象上；要提示就看 `error`。
+///
+/// 它不碰 `AppData`，所以**不走** `current` / `mutate`，也就不需要 `DATA_LOCK`。
+/// `(async)` 让它跑在线程池上 —— 注册表 IO 和文件 IO 一样，不该压在主线程。
+#[tauri::command(async)]
+pub fn set_autostart(enabled: bool) -> crate::autostart::Status {
+    crate::autostart::set(enabled)
 }
 
 /// 前台是不是压着一个全屏程序。感应条的悬停门控用，见 [ui/window.js](ui/window.js)。

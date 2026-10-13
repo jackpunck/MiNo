@@ -726,6 +726,60 @@ body.dragging .todo-text {
   outline-offset: 2px;
 }
 
+/* 开关（开机自启动）。仓库里第一个真正的开关控件 —— 已有的「选中态」只有色块的
+   aria-checked 和图标按钮的 aria-pressed，两者都只靠颜色表达，没有可滑动的位置。
+   开机自启动是持续生效的系统级设置，光靠文字变色不够明确，所以给它轨道 + 滑块。
+
+   配色刻意只有明暗、不带色相：窗口 chrome 里唯一的颜色是 #update-status 那几个
+   语义色（成功/失败提示），控件本身不该再引入第二种「什么颜色代表好」。 */
+.switch {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 16px;
+  /* border 1 + padding 2 → 内容区 24×10，滑块正好 10px，位移就是 24 - 10 = 14px。
+     这三个数是一组，改轨道尺寸要一起改，所以几何关系写在这里而不是散在两条规则里。 */
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: background var(--ease), border-color var(--ease);
+}
+
+.switch-knob {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+  transition: transform var(--ease), background var(--ease);
+}
+
+.switch:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.switch[aria-checked='true'] {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.switch[aria-checked='true'] .switch-knob {
+  transform: translateX(14px);
+  background: #f5f5f7;
+}
+
+.switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.switch:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 2px;
+}
+
 .hint {
   font-size: 10.5px;
   color: var(--text-faint);
@@ -748,6 +802,15 @@ body.dragging .todo-text {
 }
 #update-status[data-kind='ok'] {
   color: var(--text-dim);
+}
+
+/* 开机自启动的提示行。和上面同源：读不到注册表 / 启动项指向别的路径时要说清楚，
+   空着的时候不能占一行高度。 */
+#autostart-hint:empty {
+  display: none;
+}
+#autostart-hint[data-kind='error'] {
+  color: #ff9b9b;
 }
 
 /* -------------------------------------------------------------------- 提示 */

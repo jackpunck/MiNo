@@ -1,6 +1,6 @@
 [package]
 name = "mino"
-version = "0.3.0"
+version = "0.4.0"
 description = "MiNo - 常驻桌面的极简今日待办浮窗"
 edition = "2021"
 rust-version = "1.77.2"
@@ -16,17 +16,22 @@ tauri-plugin-single-instance = "2"
 # 仅用于把前端上传的字体/背景字节解码出原始二进制
 base64 = "0.22"
 
-# 只为一件事：判断前台窗口是不是铺满整块显示器的全屏程序（感应条的悬停门控，
-# 见 window::foreground_is_fullscreen）。浏览器里看不到别的窗口，这件事只有
-# Win32 知道。
+# 为两件事：
 #
-# 用 windows-sys 而不是 `windows` crate：这里只要三个查询函数，原始 FFI 的签名
-# 跨版本稳定，不需要 Result 包装、也不需要为每个结构体准备 Default。
-# features 精确到用到的三个模块，不要图省事开 "all" —— 那会把整棵 Win32 绑定的
+# 1. 判断前台窗口是不是铺满整块显示器的全屏程序（感应条的悬停门控，见
+#    window::foreground_is_fullscreen）。浏览器里看不到别的窗口，这件事只有 Win32 知道。
+# 2. 读写开机自启动的注册表项（见 autostart）。那里刻意不用 tauri-plugin-autostart：
+#    它只有「写 Run 项」这一半，读不出任务管理器写在 StartupApproved 里的禁用标记，
+#    于是用户在任务管理器里关掉之后，开关还会继续说「已开启」—— 那正是要避免的。
+#
+# 用 windows-sys 而不是 `windows` crate：要的都是原始 FFI，签名跨版本稳定，
+# 不需要 Result 包装、也不需要为每个结构体准备 Default。
+# features 精确到用到的模块，不要图省事开 "all" —— 那会把整棵 Win32 绑定的
 # 编译时间都算进来。
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Registry",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
