@@ -478,8 +478,11 @@ enum OpenError {
 /// 的标准键，正常情况下它一定在。真不在的话，报个错比悄悄重建系统状态更诚实。
 fn open_key(subkey: &str, access: u32) -> Result<Key, OpenError> {
     let wide = to_wide(subkey);
-    // windows-sys 的结构体不实现 Default，用 zeroed（同 window.rs）
-    let mut hkey: HKEY = std::mem::zeroed();
+    // windows-sys 的结构体不实现 Default，用 zeroed（同 window.rs）。
+    // 它自己就是 `unsafe fn`，所以要单独包一层 —— window.rs 那边整个函数体是
+    // 一个 unsafe 块，这个细节被盖住了；这里只在 FFI 调用处收窄 unsafe 范围。
+    // 值是出参，只在成功时才被写入（失败时我们不会用它构造 Key）。
+    let mut hkey: HKEY = unsafe { std::mem::zeroed() };
 
     let rc = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide.as_ptr(), 0, access, &mut hkey) };
 
