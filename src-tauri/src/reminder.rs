@@ -85,6 +85,22 @@ const MAX_ROWS: usize = 3;
 /// 隐藏同一个窗口」准备的，而我们从来没有过多个定时器。
 static SHOWN_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// 卡片上正在显示的那几条**仅一次**任务的 id。
+///
+/// 用户点 × 关掉卡片时，[`dismiss_popup`] 会把它们标记成已完成 —— 「这条提醒我看过了」
+/// 对一次性提醒就等于「这件事做完了」。
+///
+/// ⚠️ **每日任务不在里面。** 它每天都要做，点掉一次不等于做完了；把它一起划掉的话，
+/// 用户第二天还会看到它回到列表里，反而更困惑。未知模式按 [`mode_or_once`] 的规矩
+/// 降级成 `once`，所以这里用的判据和卡片上那个圆点、以及 `is_due` 是同一个。
+///
+/// ⚠️ **只收卡片上真正画出来的那几条**（`MAX_ROWS` 之内）。「还有 N 条」那些用户根本
+/// 没看见，替他做主把没看见的任务标记完成是越界。
+///
+/// 生命周期和 [`SHOWN_AT`] 同步：[`show_popup`] 写、[`hide_popup`] 清。清掉是必须的 ——
+/// 留着上一次的名单，下一次点 × 会把用户早已看不到的那批任务划掉。
+static PENDING_ONCE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 // ---------------------------------------------------------------------------
 // 纯函数
 //
@@ -299,15 +315,58 @@ fn run(app: AppHandle) {
     }
 }
 
-/// 收起浮窗。
+/// 收起浮窗。**只收窗口，不动任何任务状态。**
 ///
 /// ⚠️ **这是浮窗唯一的消失方式** —— 它不会自己收起来了（2026-10-16 起，见 [`SHOWN_AT`]）。
-/// 两个调用者都是用户的主动动作：`commands::dismiss_reminder`（点 × 或 Esc）和
-/// `commands::open_reminder`（点某一条，跳回主窗口并高亮它）。
+///
+/// 和 [`dismiss_popup`] 的区别就是「要不要把卡片上的一次性任务标记完成」：
+/// 点某一行的语义是「我去看看」（`commands::open_reminder`），走这里；点 × 的语义是
+/// 「我处理完了」（`commands::dismiss_reminder`），走那边。**两个调用点别用混。**
 pub fn hide_popup(app: &AppHandle) {
     *SHOWN_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // 名单和窗口同生共死：窗口都收了，下一次点 × 不该再按这份名单划任务。
+    PENDING_ONCE.lock().unwrap_or_else(|e| e.into_inner()).clear();
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
         let _ = w.hide();
+    }
+}
+
+/// 用户点 ×（或按 Esc）关掉卡片：收起它，并把上面那些「仅一次」的任务标记成已完成。
+///
+/// 顺序是**先取名单、再收窗口** —— [`hide_popup`] 会把 [`PENDING_ONCE`] 清空。
+///
+/// 这套动作里有三处刻意的妥协：
+///
+///   - **标记失败不回滚、也不重试。** 卡片已经收起来了，用户看到的就是「关掉了」；
+///     这时候再弹一个「保存失败」的提示只是在为一次用户没要求过的副作用道歉。最坏
+///     情况是任务没被划掉，用户自己点一下圆圈即可 —— 那是他本来就有的能力。
+///   - **改动条数为 0 时不发 `mino://todos-changed`。** 空列表、任务已被删、用户自己
+///     已经勾过 —— 这些都等于「没有变化」，让主窗口白刷一轮没有意义。
+///   - **只记条数，不记任务正文**（仓库既有铁律）。
+pub fn dismiss_popup(app: &AppHandle) {
+    let ids: Vec<String> = {
+        let mut g = PENDING_ONCE.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *g)
+    };
+
+    hide_popup(app);
+
+    if ids.is_empty() {
+        return;
+    }
+
+    match crate::commands::complete_todos(app, &ids) {
+        Ok(0) => {}
+        Ok(n) => {
+            info!("提醒卡片关闭，「仅一次」任务标记完成 {n} 条");
+            // ⚠️ 事件名必须**就地写字面量**，不能提成常量：`tools/check-commands.mjs`
+            // 的 Rust 侧正则只认 `.emit(` 后面直接跟的字符串，写成常量它就扫不到，
+            // 前端那条 `listen` 会变成「没有任何地方 emit」而 CI 直接红。
+            if let Err(e) = app.emit("mino://todos-changed", ()) {
+                warn!("数据变更事件发送失败，主窗口可能不会立刻重绘: {e}");
+            }
+        }
+        Err(e) => warn!("标记完成失败（卡片已关掉，任务保持原样）: {e}"),
     }
 }
 
@@ -382,14 +441,23 @@ fn show_popup(app: &AppHandle, due: &[Todo]) {
     // 很讨厌，而且那次焦点变化还会让主窗口收到 `Focused(false)` 而自己收起来。
     let _ = w.show();
 
+    // 名单和画出来的内容必须是**同一批**：用户点 × 时该划掉的就是他眼睛看到的那些。
+    // 所以一次性任务的 id 在下面这个循环里边画边收，而不是另起一遍 filter ——
+    // 另起一遍很容易忘了同样 `.take(MAX_ROWS)`，「还有 N 条」里那些没人看见的任务
+    // 就会在点 × 时被悄悄标记完成。
+    let mut once_ids: Vec<String> = Vec::new();
     let items: Vec<serde_json::Value> = due
         .iter()
         .take(MAX_ROWS)
         .map(|t| {
+            let mode = mode_or_once(&t.remind_mode);
+            if mode == "once" {
+                once_ids.push(t.id.clone());
+            }
             serde_json::json!({
                 "id": t.id,
                 "text": t.text,
-                "mode": mode_or_once(&t.remind_mode),
+                "mode": mode,
             })
         })
         .collect();
@@ -409,6 +477,9 @@ fn show_popup(app: &AppHandle, due: &[Todo]) {
     // 回答「主窗口这次失焦是不是刚弹出来的浮窗抢走的」（见 [`grace_holds`]）。
     // 重新弹一次（又来了一批提醒）就刷新一次，宽限期也随之重新开始。
     *SHOWN_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    // 同一批内容也决定了「点 × 时要划掉谁」。**覆盖写**，不是追加：卡片现在就显示
+    // 这一批，上一批已经不在屏幕上了 —— 留着它们，点 × 会划掉用户看不到的任务。
+    *PENDING_ONCE.lock().unwrap_or_else(|e| e.into_inner()) = once_ids;
 }
 
 /// 浮窗在**主窗口所在那台显示器**的正中。

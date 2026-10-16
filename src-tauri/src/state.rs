@@ -509,6 +509,44 @@ pub fn set_todo_reminder(data: &mut AppData, id: &str, at: &str, mode: &str, dat
     true
 }
 
+/// 把给定的一批任务标记成**已完成**。返回**实际改动的条数**。
+///
+/// 给提醒浮窗的「点 × 关掉卡片」用（`crate::reminder::dismiss_popup`）：对一次性提醒
+/// 而言，「这条提醒我看过了」就等于「这件事做完了」。
+///
+/// 三个语义上的决定：
+///
+///   - **幂等。** 已经完成的会被跳过、并且不计入返回的条数 —— 那个条数决定要不要
+///     通知主窗口重绘，把「本来就没变」算成变化会让前端白刷一轮。
+///   - **不碰 [`Todo::completed_at`] 以外的东西。** 尤其是 `remind_at` 那几个字段：
+///     清掉它们等于顺手改掉用户设的提醒，而这个函数只该改「完成」这一个状态。
+///     留着也不会让提醒重响 —— `is_due` 要求 `!completed`，而且 `reminded_on`
+///     已经是今天了。
+///   - **同一次调用里所有任务共用一个 `completed_at`。** 它们是被同一个动作
+///     （点一次 ×）标记的，时间戳理应一致；逐条调 `now_ms()` 还会让同一批的排序
+///     依赖循环顺序。
+///
+/// 找不到的 id 静默跳过：用户可能在卡片弹出之后把那条删了，那不是错误。
+pub fn complete_todos(data: &mut AppData, ids: &[String]) -> usize {
+    if ids.is_empty() {
+        return 0;
+    }
+
+    let at = now_ms();
+    let mut n = 0usize;
+
+    for todo in data.todos.iter_mut() {
+        if todo.completed || !ids.iter().any(|i| i == &todo.id) {
+            continue;
+        }
+        todo.completed = true;
+        todo.completed_at = Some(at);
+        n += 1;
+    }
+
+    n
+}
+
 /// 把导入字体的 family 前缀从 `MiniMemo ` 改写成 `MiNo `（v3 → v4）。
 ///
 /// 这个前缀**写在磁盘上**三处，漏掉任何一处的表现都是「我导入的字体自己变了」：
@@ -780,6 +818,14 @@ mod tests {
             remind_date: String::new(),
             reminded_on: String::new(),
         }
+    }
+
+    /// 只装一批任务的数据。**不设 `last_check_date`** —— 那会让 `rollover` 真的跑起来，
+    /// 而这里要测的都是「不涉及跨日」的纯数据函数（要用跨日请走 `rolled_over_from_yesterday`）。
+    fn data_with(todos: Vec<Todo>) -> AppData {
+        let mut data = AppData::default();
+        data.todos = todos;
+        data
     }
 
     /// 老数据必须落回 `created_at` 倒序：新任务在前。
@@ -1483,5 +1529,72 @@ mod tests {
         let mut data = rolled_over_from_yesterday(vec![t]);
         assert_eq!(rollover(&mut data), 1);
         assert!(data.todos.is_empty());
+    }
+
+    #[test]
+    fn complete_todos_marks_only_the_listed_ones() {
+        let mut data = data_with(vec![
+            todo("a", false, 1, 0),
+            todo("b", false, 2, 0),
+            todo("c", false, 3, 0),
+        ]);
+
+        let n = complete_todos(&mut data, &["a".into(), "c".into()]);
+        assert_eq!(n, 2);
+        assert!(data.todos.iter().find(|t| t.id == "a").unwrap().completed);
+        assert!(!data.todos.iter().find(|t| t.id == "b").unwrap().completed);
+        assert!(data.todos.iter().find(|t| t.id == "c").unwrap().completed);
+    }
+
+    /// 幂等，而且**已经完成的那些不计入返回条数** —— 那个条数是「要不要通知前端重绘」
+    /// 的依据，把没变过的算成变化会让主窗口白刷一轮。
+    #[test]
+    fn complete_todos_is_idempotent_and_counts_only_changes() {
+        let mut data = data_with(vec![todo("a", true, 1, 0), todo("b", false, 2, 0)]);
+        let before = data.todos.iter().find(|t| t.id == "a").unwrap().completed_at;
+
+        let n = complete_todos(&mut data, &["a".into(), "b".into()]);
+        assert_eq!(n, 1, "a 本来就是完成的");
+        assert_eq!(
+            data.todos.iter().find(|t| t.id == "a").unwrap().completed_at,
+            before,
+            "已经完成的那条连 completed_at 都不该被刷新"
+        );
+
+        // 再来一次：这次一条都没变
+        assert_eq!(complete_todos(&mut data, &["a".into(), "b".into()]), 0);
+    }
+
+    /// 同一次动作标记的一批任务共用一个时间戳。
+    #[test]
+    fn complete_todos_shares_one_timestamp() {
+        let mut data = data_with(vec![todo("a", false, 1, 0), todo("b", false, 2, 0)]);
+        complete_todos(&mut data, &["a".into(), "b".into()]);
+
+        let a = data.todos.iter().find(|t| t.id == "a").unwrap().completed_at;
+        let b = data.todos.iter().find(|t| t.id == "b").unwrap().completed_at;
+        assert!(a.is_some());
+        assert_eq!(a, b);
+    }
+
+    /// 找不到的 id 静默跳过；空的 ids 直接返回 0，不白跑一趟。
+    /// 尤其是**别碰提醒字段** —— 「标记完成」只该改完成状态。
+    #[test]
+    fn complete_todos_ignores_missing_ids_and_keeps_the_reminder() {
+        let mut t = todo("a", false, 1, 0);
+        t.remind_at = Some("09:00".into());
+        t.remind_mode = "daily".into();
+        t.reminded_on = "2026-01-01".into();
+        let mut data = data_with(vec![t]);
+
+        assert_eq!(complete_todos(&mut data, &[]), 0);
+        assert_eq!(complete_todos(&mut data, &["nope".into()]), 0);
+
+        assert_eq!(complete_todos(&mut data, &["a".into()]), 1);
+        let t = data.todos.iter().find(|t| t.id == "a").unwrap();
+        assert!(t.completed);
+        assert_eq!(t.remind_at.as_deref(), Some("09:00"));
+        assert_eq!(t.remind_mode, "daily");
+        assert_eq!(t.reminded_on, "2026-01-01");
     }
 }

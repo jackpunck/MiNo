@@ -118,6 +118,28 @@ pub(crate) fn mark_reminded(
     .map(|_| ())
 }
 
+/// 把一批任务标记成已完成，返回**实际改动的条数**。
+///
+/// 给 `reminder::dismiss_popup` 用（用户点 × 关掉提醒卡片）。0 表示什么都没变 ——
+/// 调用方靠它决定要不要通知主窗口重绘，所以别把空列表或「本来就完成了」算成改动。
+///
+/// 数据逻辑在 `state::complete_todos` 那个纯函数里，这里只负责取锁、落盘、排序。
+pub(crate) fn complete_todos(app: &AppHandle, ids: &[String]) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let ids = ids.to_vec();
+    // `mutate` 的闭包签名固定是 `Result<(), String>`，带不出返回值，
+    // 所以条数从外面这个变量捞回来。闭包是 `FnOnce`，借用在 mutate 返回时就结束了。
+    let mut changed = 0usize;
+    mutate(app, |data| {
+        changed = state::complete_todos(data, &ids);
+        Ok(())
+    })?;
+    Ok(changed)
+}
+
 fn new_id(prefix: &str) -> String {
     use std::sync::atomic::AtomicU64;
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -316,13 +338,21 @@ pub fn set_reminder(
     })
 }
 
-/// 收起提醒浮窗（弹窗里按 Esc 或点 ×）。
+/// 用户点 ×（或按 Esc）关掉提醒浮窗。
 ///
-/// 它不碰 `AppData`，所以**不走** `mutate`，也就不需要 `DATA_LOCK`。
-/// `(async)` 让它跑在线程池上，别压主线程。
+/// **这不只是把窗口藏起来** —— 卡片上那些「仅一次」的任务会被标记成已完成
+/// （「这条提醒我看过了」对一次性提醒就等于「这件事做完了」）。整套动作在
+/// `reminder::dismiss_popup` 里，理由和边界写在那边。
+///
+/// ⚠️ **和 `open_reminder` 的区别是刻意的**：点某一行只跳回主窗口高亮，不动任务状态。
+/// 那个动作的语义是「我去看看」，不是「我处理完了」。所以这里走 `dismiss_popup`，
+/// 那边走 `hide_popup`。
+///
+/// `(async)` 让它跑在线程池上 —— 下面那次标记完成要走 `mutate`，而临界区里含 `fsync`，
+/// 绝不能压在主线程上。
 #[tauri::command(async)]
 pub fn dismiss_reminder(app: AppHandle) {
-    crate::reminder::hide_popup(&app);
+    crate::reminder::dismiss_popup(&app);
 }
 
 /// 点提醒浮窗：收起它，把主窗口叫到前面，并让那条任务闪一下。
