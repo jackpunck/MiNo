@@ -4,22 +4,26 @@
  * 窗口的高度是 Rust 按条数算出来再 set_size 的 —— 算错了内容就会被裁掉
  * （或者下面露出一块透明区域，而透明区域在 Windows 上仍然吃掉鼠标点击）。
  *
- *   --head-h  34px  ←→  reminder.rs 的 POPUP_HDR
- *   --row-h   30px  ←→  reminder.rs 的 POPUP_ROW
- *   列表上下 padding 各 7px（合计 14px） ←→  POPUP_PAD
+ *   --head-h  68px  ←→  reminder.rs 的 POPUP_HDR
+ *   --row-h   60px  ←→  reminder.rs 的 POPUP_ROW
+ *   列表上下 padding 各 14px（合计 28px） ←→  POPUP_PAD
+ *
+ * 2026-10-16 整体翻倍。原来这一组是 34 / 30 / 7×2，配 268px 宽的窗口。**尺寸和字号
+ * 必须一起动** —— 只把窗口放大、字号留在 12px，得到的是一张空荡荡的大卡片：文字
+ * 缩在左上角，比原来更难读。
  */
 
 :root {
   /* 对齐 styles.css 的窗口 chrome 变量。只取这里真正用到的几个 ——
      浮窗不用便签配色（--note-*），那是主窗口的事。 */
-  --radius-window: 12px;
+  --radius-window: 20px;
   --border: rgba(255, 255, 255, 0.13);
   --text: #f5f5f7;
   --text-dim: rgba(255, 255, 255, 0.6);
   --text-faint: rgba(255, 255, 255, 0.38);
 
-  --head-h: 34px;
-  --row-h: 30px;
+  --head-h: 68px;
+  --row-h: 60px;
 }
 
 * {
@@ -63,22 +67,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 6px 0 12px;
+  padding: 0 12px 0 24px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 24px;
   color: var(--text-dim);
 }
 
 #rem-close {
-  width: 20px;
-  height: 20px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 5px;
+  border-radius: 10px;
   background: transparent;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 22px;
   cursor: pointer;
   transition: background 140ms ease, color 140ms ease;
 }
@@ -91,8 +95,8 @@ body {
 .list {
   flex: 1 1 auto;
   list-style: none;
-  /* 上下各 7px，合计 14px = reminder.rs 的 POPUP_PAD */
-  padding: 7px 0;
+  /* 上下各 14px，合计 28px = reminder.rs 的 POPUP_PAD */
+  padding: 14px 0;
   overflow: hidden;
 }
 
@@ -100,8 +104,8 @@ body {
   height: var(--row-h);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  gap: 16px;
+  padding: 0 24px;
   cursor: pointer;
   transition: background 140ms ease;
 }
@@ -113,8 +117,8 @@ body {
 /* 圆点：每日的实心、一次性的空心 —— 扫一眼就知道这条会不会明天再来 */
 .dot {
   flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   border: 1px solid var(--text-faint);
 }
@@ -127,7 +131,7 @@ body {
 .text {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 25px;
   line-height: 1.3;
   /* 超长文本用省略号，不允许撑破窗口 */
   white-space: nowrap;
@@ -139,7 +143,7 @@ body {
   height: var(--row-h);
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  font-size: 11.5px;
+  padding: 0 24px;
+  font-size: 23px;
   color: var(--text-faint);
 }

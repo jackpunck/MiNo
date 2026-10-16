@@ -18,6 +18,24 @@ use log::{error, info, warn};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 fn main() {
+    // 让主窗口和提醒浮窗**共用同一个渲染进程**，省掉第二个渲染进程（实机量到 10.8 MB）。
+    //
+    // 两个窗口都跑在 `tauri.localhost` 同源，所以 `--process-per-site` 能把它们并进
+    // 一个渲染进程 —— 这是唯一一个**不改变任何功能**的降内存手段，其余约 62 MB
+    // （browser / gpu / network / storage / crashpad）是「用了 WebView2 就必然有」的
+    // 地板，和窗口数量无关。完整账目见 CLAUDE.md 第 17 条。
+    //
+    // **为什么用环境变量而不是 `tauri.conf.json` 的 `additionalBrowserArgs`：**
+    // 那个字段一旦设置就**整体替换**掉 Tauri 的默认值，而默认值恰好是
+    // `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`（清掉 Edge 的
+    // 分享 / PDF / SmartScreen 三条 UI，少了它们内存是往上涨的）—— 用它就得永远自己
+    // 抄着那串。环境变量是**追加**：实机核过，那三条原样还在，我们这一条叠上去。
+    //
+    // **位置必须是这里。** WebView2 的**环境**在第一个 webview 被创建时才建立（在
+    // 下面的 `.build()` 里），那一刻之后再加参数就完全没用了。main() 的第一句是最后
+    // 的安全位置 —— 也还好在这里，此刻进程还是单线程的。
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--process-per-site");
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二次启动应唤醒已有窗口，而不是再开一个应用
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -193,16 +211,22 @@ fn main() {
                 // Emitter，不必纠结 Window 那边的 trait 覆盖。调用方已经保证这里
                 // 只可能是 label "main" 的那个窗口（见这个闭包开头那道闸）。
                 WindowEvent::Focused(focused) => {
-                    // 提醒浮窗挤掉主窗口焦点的那一下**不算「用户切走了」**。
+                    // 提醒浮窗**刚弹出来那一下**挤掉主窗口焦点，不算「用户切走了」。
                     //
                     // 不挡的话：浮窗弹出来 → 它的焦点变化让主窗口以为自己被切走 →
-                    // 当场收成感应条 → 12 秒后浮窗消失、焦点回来 → 又弹开。
-                    // 实机日志里这一幕完整出现过，见 reminder::init 的注释。
+                    // 当场收成感应条 → 浮窗消失、焦点回来 → 又弹开。实机日志里这一幕
+                    // 完整出现过，见 reminder::init 的注释。
+                    //
+                    // ⚠️ **判据是「弹出后几秒之内」，不是「浮窗正开着」。** 浮窗从
+                    // 2026-10-16 起不自动消失了，用它当判据等于在浮窗挂着期间（用户
+                    // 忘了关就是好几天）把主窗口的失焦全吞掉 —— Alt+Tab 走开不再收缩成
+                    // 感应条，而且越不理它越严重。宽限期为什么定这么短、以及那条更早的
+                    // 教训，写在 reminder::popup_may_have_stolen_focus 的注释里。
                     //
                     // 这是第二道网：第一道是浮窗的 `set_focusable(false)`，正常情况下
                     // 主窗口根本不会失焦，这里也就不该被走到。不记日志 —— 它是一条
                     // 本该沉默的异常路径，记了反而会淹没「窗口为什么没收起来」的现场。
-                    if !*focused && crate::reminder::popup_is_showing() {
+                    if !*focused && crate::reminder::popup_may_have_stolen_focus() {
                         return;
                     }
 

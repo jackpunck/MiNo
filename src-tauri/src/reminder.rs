@@ -14,7 +14,7 @@
 //! # ⚠️ 这个模块活在 `panic = "abort"` 的二进制里
 //!
 //! release 是 `panic = "abort"`，没有 `catch_unwind` 可用 —— **任何一次 panic 都是
-//! 整个进程消失**，而这里的线程每 2 秒无人值守地跑一次、永远不停。所以本模块的每
+//! 整个进程消失**，而这里的线程每 30 秒无人值守地跑一次、永远不停。所以本模块的每
 //! 一个函数都必须**由构造保证不 panic**：不索引切片、不 `unwrap`、不裸 `+1`
 //! （用 `wrapping_add`）、锁一律 `unwrap_or_else(|e| e.into_inner())`（对齐
 //! `commands::data_guard`）。加代码之前先想清楚这一条。
@@ -44,33 +44,46 @@ use crate::state::{self, Todo};
 /// 的 `windows` 都必须是这个名字，改一处就要改三处。
 const POPUP_LABEL: &str = "reminder";
 
-/// 主循环的睡眠间隔。它同时是「收起浮窗」的精度。
-const TICK: Duration = Duration::from_secs(2);
-
-/// 每多少个 tick 才读一次盘。2s × 15 = 30s 一次到点判定。
+/// 主循环的睡眠间隔，也就是到点判定的粒度。
 ///
 /// 读盘 + 解析 JSON 有成本，而提醒的准时性要求是分钟级的，30s 绰绰有余。
 /// **别再往下调**：首次 poll 发生在这个间隔之后，这正是弹窗页面来得及加载完的保证。
-const POLL_EVERY: u32 = 15;
+///
+/// 它从前是「2 秒一跳、每 15 跳判一次」—— 那 2 秒的精度是给「到点自动收起浮窗」
+/// 用的。**浮窗改成不自动消失了**（只有用户主动关才走），那条更细的节奏也就没有了
+/// 存在理由，连带着 `tick_hide` 和那个跳数计数器一起删掉。
+const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
-/// 浮窗停留多久后自动收起。
-const DISPLAY: Duration = Duration::from_secs(12);
+/// 浮窗弹出后多久之内，主窗口那一次「失焦」可以被当成是浮窗自己抢走的。
+///
+/// 见 [`popup_may_have_stolen_focus`]。**这个上限是必须的，不能改成「浮窗开着就一直
+/// 压制」** —— 浮窗不再自动消失了，那样等于在它挂着期间（可能好几天）把主窗口的失焦
+/// 全部吞掉，「切到别的程序就收缩成感应条」会静默失效。
+const FOCUS_GRACE: Duration = Duration::from_secs(3);
 
 // 浮窗布局，逻辑像素。**这里是唯一的计算处**，前端只负责把内容画进去。
-const POPUP_W: f64 = 268.0;
-const POPUP_HDR: f64 = 34.0;
-const POPUP_ROW: f64 = 30.0;
-const POPUP_PAD: f64 = 14.0;
+//
+// 2026-10-16 整体翻倍（268×… → 536×…）。四个常量必须**一起**翻：高度是
+// POPUP_HDR + POPUP_PAD + 条数 × POPUP_ROW 算出来的，只翻其中一两个，卡片要么把
+// 内容裁掉、要么下面露出一块透明区域。前端那一组在 ui/reminder.css 顶部，同样成对。
+const POPUP_W: f64 = 536.0;
+const POPUP_HDR: f64 = 68.0;
+const POPUP_ROW: f64 = 60.0;
+const POPUP_PAD: f64 = 28.0;
 
 /// 浮窗最多列几条。居中的卡片，多了就太挡 —— 超出只显示「还有 N 条」。
 const MAX_ROWS: usize = 3;
 
-/// 浮窗该收起的时刻。`None` = 当前没有浮窗。
+/// 浮窗**弹出**的时刻。`None` = 当前没有浮窗。
 ///
-/// **单一所有者**：只有 [`run`] 那个线程会读它并真正收起窗口。所以不需要「代次计数」
-/// 那种东西 —— 新提醒来了只是把截止时刻往后推，上一条自然作废，这正是「不要提前收起
-/// 新提醒」的性质，而且不用发明一个计数器。
-static HIDE_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// ⚠️ **它不再是「该收起的时刻」。** 浮窗不会自己收起来了 —— 到点之后它就一直在那儿，
+/// 直到用户点 × 或者点某一条（`commands::dismiss_reminder` / `open_reminder` 都走
+/// [`hide_popup`]）。所以这不是一个计时器，只是「它是刚弹出来的吗」这一个问题的答案。
+///
+/// 从前它叫 `HIDE_AT`、存的是 `now + DISPLAY`，那时轮询线程是收起的单一所有者。
+/// 现在没有这个角色了，**谁都不需要代次计数** —— 那个设计本来就是为「多个定时器抢着
+/// 隐藏同一个窗口」准备的，而我们从来没有过多个定时器。
+static SHOWN_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // 纯函数
@@ -204,7 +217,7 @@ pub fn is_due(t: &Todo, today: &str, hhmm: &str) -> bool {
 /// [23:43:54] 提醒触发 1 条
 /// [23:43:54] 窗口焦点离开
 /// [23:43:54] set_edge_collapsed collapsed=true [focus-lost(...)]
-/// [23:44:06] 窗口焦点进入                      ← 12 秒后，正好是 DISPLAY
+/// [23:44:06] 窗口焦点进入                      ← 12 秒后，正好是当时浮窗的自动收起时长
 /// [23:44:06] set_edge_collapsed collapsed=false [focus-gained(...)]
 /// ```
 ///
@@ -231,18 +244,33 @@ pub fn init(app: &AppHandle) {
     }
 }
 
-/// 提醒浮窗正显示着吗。
+/// 主窗口刚刚这次失焦，会不会是浮窗弹出来那一下抢走的。
 ///
 /// 给 `main.rs` 的 `WindowEvent::Focused` 用：浮窗挤掉主窗口焦点的那一下不该被当成
 /// 「用户切走了」。锁里只有一个 `Option<Instant>`，不碰文件，主线程上调用是安全的。
 ///
 /// 这是**第二道网** —— 第一道是 [`init`] 里的 `set_focusable(false)`，正常情况下
 /// 主窗口根本不会失去焦点，这里也就不该被触发。
-pub fn popup_is_showing() -> bool {
-    HIDE_AT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some()
+///
+/// ⚠️ **判据是「弹出后 [`FOCUS_GRACE`] 之内」，不是「浮窗正开着」。** 浮窗从 2026-10-16
+/// 起不自动消失了，用后者等于在它挂着期间（可能好几天）把主窗口的失焦一路吞掉：
+/// 「切到别的程序就收缩成感应条」静默失效，而且失效时长等于用户忘了关弹窗的时长 ——
+/// 一个越不理它越严重的 bug。要压制的只是弹窗那一瞬间的焦点变化。
+pub fn popup_may_have_stolen_focus() -> bool {
+    let shown = *SHOWN_AT.lock().unwrap_or_else(|e| e.into_inner());
+    grace_holds(shown, Instant::now(), FOCUS_GRACE)
+}
+
+/// `shown` 这一刻到现在，还在宽限期内吗。
+///
+/// 抽成纯函数只为了能在 CI 上测 —— 这个模块里能真正验证的东西不多（本机没有 Rust
+/// 工具链），别把判据埋进闭包里。用 `saturating_duration_since` 而不是 `-`：后者在
+/// `now` 早于 `shown` 时会 panic，而 panic 在这个二进制里就是进程消失。
+fn grace_holds(shown: Option<Instant>, now: Instant, grace: Duration) -> bool {
+    match shown {
+        Some(t) => now.saturating_duration_since(t) < grace,
+        None => false,
+    }
 }
 
 /// 起调度线程。**失败只记日志，不阻断启动** —— `setup()` 的每一步都要能降级。
@@ -258,9 +286,8 @@ pub fn spawn(app: &AppHandle) {
 }
 
 fn run(app: AppHandle) {
-    let mut n: u32 = 0;
     loop {
-        std::thread::sleep(TICK);
+        std::thread::sleep(POLL_INTERVAL);
 
         // 退出前先看一眼。不检查的话这个线程会跟着进程一起消失，
         // 但显式的出口让它有机会在托盘退出时干净地停下来。
@@ -268,34 +295,17 @@ fn run(app: AppHandle) {
             return;
         }
 
-        tick_hide(&app);
-
-        // `wrapping_add` 而不是 `+=`：debug 构建下溢出是 panic，而 abort 下 panic
-        // 就是进程消失。这个计数器连续跑几十年才会回绕，代价为零，何必留个雷。
-        n = n.wrapping_add(1);
-        if n % POLL_EVERY == 0 {
-            poll(&app);
-        }
+        poll(&app);
     }
 }
 
-/// 到点就把浮窗收起来。返回本次是否收起了。
-fn tick_hide(app: &AppHandle) -> bool {
-    let expired = {
-        let g = HIDE_AT.lock().unwrap_or_else(|e| e.into_inner());
-        matches!(*g, Some(t) if Instant::now() >= t)
-    };
-    if !expired {
-        return false;
-    }
-
-    hide_popup(app);
-    true
-}
-
-/// 立刻收起浮窗并取消自动收起计时。
+/// 收起浮窗。
+///
+/// ⚠️ **这是浮窗唯一的消失方式** —— 它不会自己收起来了（2026-10-16 起，见 [`SHOWN_AT`]）。
+/// 两个调用者都是用户的主动动作：`commands::dismiss_reminder`（点 × 或 Esc）和
+/// `commands::open_reminder`（点某一条，跳回主窗口并高亮它）。
 pub fn hide_popup(app: &AppHandle) {
-    *HIDE_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *SHOWN_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
         let _ = w.hide();
     }
@@ -395,7 +405,10 @@ fn show_popup(app: &AppHandle, due: &[Todo]) {
         }),
     );
 
-    *HIDE_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + DISPLAY);
+    // 记下弹出时刻。它**不排任何收起** —— 浮窗会一直留到用户主动关；这个时刻只用来
+    // 回答「主窗口这次失焦是不是刚弹出来的浮窗抢走的」（见 [`grace_holds`]）。
+    // 重新弹一次（又来了一批提醒）就刷新一次，宽限期也随之重新开始。
+    *SHOWN_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 }
 
 /// 浮窗在**主窗口所在那台显示器**的正中。
@@ -664,5 +677,26 @@ mod tests {
         };
         assert!(is_due(&t, "2026-10-13", "09:00"));
         assert!(!is_due(&t, "2026-10-14", "09:00"));
+    }
+
+    /// 宽限期：只在弹出后那一小段里成立。
+    ///
+    /// 这条守的是「浮窗不自动消失」带来的那个坑：判据要是退化成「浮窗正开着」，
+    /// 主窗口的失焦会在浮窗挂着的整段时间里被吞掉（见 `popup_may_have_stolen_focus`）。
+    #[test]
+    fn focus_grace_expires() {
+        let grace = Duration::from_secs(3);
+        let t0 = Instant::now();
+
+        // 还没弹过 —— 主窗口的失焦就是用户自己切走了
+        assert!(!grace_holds(None, t0, grace));
+
+        // 刚弹出来那一下
+        assert!(grace_holds(Some(t0), t0, grace));
+        assert!(grace_holds(Some(t0), t0 + Duration::from_secs(2), grace));
+
+        // 到点就失效。**浮窗还开着也一样失效** —— 这正是这条测试要钉住的行为
+        assert!(!grace_holds(Some(t0), t0 + grace, grace));
+        assert!(!grace_holds(Some(t0), t0 + Duration::from_secs(600), grace));
     }
 }
