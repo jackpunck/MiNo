@@ -72,6 +72,55 @@ jobs:
         run: cargo test
 
   # ---------------------------------------------------------------------------
+  # Android：每日待办 + 提醒通知
+  #
+  # 独立原生 Android 验证线：不加载 WebView，不复制桌面 ui/。
+  # 单测/lint/打包仍不代表真实手机上的提醒和内存验收。
+  # ---------------------------------------------------------------------------
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 缓存 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 单测 + lint + 优化验收包
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleBenchmark :app:assembleDebugAndroidTest
+          sha256sum app/build/outputs/apk/benchmark/*.apk
+          stat --format='%n %s bytes' app/build/outputs/apk/benchmark/*.apk
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiNo-Android
+          path: android/app/build/outputs/apk/benchmark/*.apk
+          if-no-files-found: error
+
+      - name: 上传 Android 检查报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiNo-Android-reports
+          path: |
+            android/app/build/reports/tests/
+            android/app/build/reports/lint-results-debug.*
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
   # 出包：打 tag 或手动触发
   # ---------------------------------------------------------------------------
   build:

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    自适应图标的前景层是 108×108，但只有中间 66×66 的安全区保证不被各家
+    启动器裁掉。对勾的三个折点按这个比例从 gen-icons.mjs 的归一化坐标换算过来：
+    (0.28,0.53) (0.43,0.68) (0.73,0.33) → 54 + (x-0.5)*66。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39.5,56 L49.4,65.9 L69.2,42.8"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+</vector>

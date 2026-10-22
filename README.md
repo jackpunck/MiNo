@@ -246,7 +246,25 @@ MiNo 会自动退到 **`Ctrl + Alt + Space`**,并且在设置面板里显示**�
 
 ---
 
-## 检查更新
+## 手机版(Android)
+
+手机端是独立的 **原生 Android 应用**，使用系统控件和系统字体，不加载 WebView、网页资源或 UI 框架。与 Windows 端数据各自本地保存，不互通。
+
+- **待办**：新增、完成、点正文编辑、删除、清空已完成；触屏滚动，不提供拖动排序。
+- **提醒设置**：选择“指定日期”或“每天”，预览后点“保存提醒”生效；取消不改变原设置。
+- **24小时制**：直接上下滑动小时 `00–23`、分钟 `00–59` 两列数字；时间面板确定后仍需保存提醒。
+- **日间 / 夜晚**：点右上角 `⋮` 切换，两种主题覆盖列表和原生弹窗，重启保留选择，默认夜晚。
+- **指定日期**：可选择未来日期；过去日期拒绝，今天已过的时间会询问立即提醒或改到明天。
+- **每天**：每天在设定时间提醒，今天完成后次日恢复未完成，保持任务顺序。
+- **通知动作**：仅一次的“完成”标记任务完成；每日的“知道了”只关闭通知；点正文定位任务。划掉通知不算完成。
+- 系统闹钟负责后台调度，无常驻服务、无轮询。普通进程回收与用户“强制停止”不同：强制停止后需重新打开应用。重启后解锁会恢复调度。
+- 通知和精确提醒权限需用户授权，拒绝精确权限时提醒可能延迟；横幅、声音受系统通知渠道和勿扰设置控制。Android 14 起也允许划掉普通常驻通知。
+- 手机端没有联网权限、应用内更新、账号或云同步；系统备份关闭。手动更新需相同签名，正式分发前需确定固定签名。
+
+**体积与内存**：优化验收包开启 R8 与资源裁剪，不附带网页、字体或位图背景。APK 大小以实际构建记录为准；运行内存必须在同一台手机上测量，编译通过不代表达成内存目标。
+
+---
+## 检查更新（Windows）
 
 设置面板最底下有版本号和一个 **「检查更新」** 按钮。点一下会去 GitHub 的公开 API
 查一次最新版本,告诉你「已是最新」还是「发现新版本」(后者多一个「前往下载」按钮,
@@ -299,7 +317,9 @@ API 发一次**只读**请求(`GET /repos/jackpunck/MiNo/releases/latest`),不�
 
 ## 已知限制
 
-- **仅支持 Windows。** 窗口透明、边缘吸附、托盘行为都是按 Windows 实现的。
+- **桌面版仅支持 Windows。** 窗口透明、边缘吸附、托盘行为都是按 Windows 实现的。
+  手机端是另一个独立应用,见上文「手机版(Android)」。
+- **手机版和电脑版的数据不互通。** 两边各自存在本地,没有同步,也没有导出导入。
 - **全屏程序在前台时,鼠标碰感应条不会展开。** 见上文「什么时候会自己冒出来」——
   这是有意为之:全屏看视频或演示时被浮窗挡住是很烦的事。其余情况碰一下就展开。
 - **`Alt + Space` 可能被系统占用。** 见上文「全局快捷键」,会自动回退。
@@ -384,6 +404,24 @@ npm run icons      # 重新生成 src-tauri/icons
 > 它挡得住 API 误用和类型错误,但透明窗口、边缘吸附的命中测试、托盘与全局快捷键
 > 在真实桌面上是否好用,只有在 Windows 上跑一遍才算数。
 
+### Android
+
+需要 JDK 17 和 Android SDK(minSdk 26 / targetSdk 35)。最省事的是装
+[Android Studio](https://developer.android.com/studio),它一次装齐 JDK 与 SDK;
+装完把 Android SDK 路径告诉 Gradle(Android Studio 会自动写 `local.properties`)。
+
+```bash
+cd android
+./gradlew :app:testDebugUnitTest   # 数据层纯逻辑单测,不需要模拟器
+./gradlew :app:lintDebug :app:assembleDebug :app:assembleBenchmark
+```
+
+手机端使用原生系统控件，不复制 `ui/`。`assembleBenchmark` 生成经过代码与资源裁剪、使用本地调试签名的验收 APK；它不等同于正式发布签名。
+
+> **和桌面版一样,CI 绿了不等于能用。** 单测只覆盖数据层的纯函数;
+> 通知能不能弹、闹钟跨重启还在不在、通知权限被拒之后是什么表现,
+> 只有真机才算数。
+
 ### 图标
 
 `src-tauri/icons/` 里的图标由脚本生成,不依赖任何设计资源:
@@ -429,11 +467,22 @@ ui/
 ├── update.js      检查更新
 └── settings.js    设置面板
 
+android/app/src/main/java/com/mino/app/
+├── MainActivity.kt   原生任务列表、编辑与提醒权限
+├── ReminderEditor.kt 提醒设置与保存预览
+├── Model.kt          数据模型(字段与 state.rs 逐条对齐)
+├── Store.kt          原子持久化 + 一把锁的读改写
+├── Logic.kt          rollover / 排序 / 到点判定(纯函数,被单测覆盖)
+├── Reminders.kt      AlarmManager 排程 + 到点处理
+├── Notifications.kt  常驻通知与动作按钮
+├── ReminderPolicy.kt 可测试的本地日期调度策略
+└── Receivers.kt      闹钟 / 开机 / 通知动作三个广播接收器
+
 tools/
 ├── gen-icons.mjs      生成 src-tauri/icons(零依赖,手写 PNG/ICO)
 ├── check-commands.mjs 校验前端 invoke() / listen() 与 Rust 侧的注册是否对得上
 └── check-version.mjs  版本号比较的自测
 
 .github/workflows/
-└── build.yml      cargo check + test;打 tag 或手动触发时出包
+└── build.yml      cargo check + test;Android 单测与 APK;打 tag 或手动触发时出包
 ```

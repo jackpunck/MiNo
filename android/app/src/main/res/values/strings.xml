@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MiNo</string>
+
+    <string name="notif_channel_name">任务提醒</string>
+    <string name="notif_channel_desc">任务到点时在通知栏提醒</string>
+    <string name="notif_title">MiNo 提醒</string>
+
+    <!-- 仅一次的任务：点掉就等于做完了（对齐桌面版点 × 的行为） -->
+    <string name="notif_action_complete">完成</string>
+    <!-- 每天的任务：点掉只是不看这条提醒，不划掉任务 -->
+    <string name="notif_action_dismiss">知道了</string>
+
+</resources>
