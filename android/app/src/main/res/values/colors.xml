@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 styles.css 里 #app 的深色底一致，避免启动时闪一下别的颜色 -->
+
+</resources>

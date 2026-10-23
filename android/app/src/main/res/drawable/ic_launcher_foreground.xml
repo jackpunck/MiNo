@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 npm run icons 生成，请修改 tools/icon-artwork.mjs -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+<group android:scaleX="0.1875" android:scaleY="0.1875" android:translateX="30" android:translateY="30">
+<path android:fillColor="#F6D8A8" android:pathData="M60,4 L176,4 C183,4 188,7 193,12 L240,59 C248,67 252,73 252,84 L252,196 C252,232 232,252 196,252 L60,252 C24,252 4,232 4,196 L4,60 C4,24 24,4 60,4 Z"/>
+<path android:fillColor="#EAA16B" android:pathData="M176,4 C182,5 178,25 180,46 C181,62 190,70 207,70 L234,70 C243,70 249,74 252,80 C252,73 248,67 240,59 L193,12 C188,7 183,4 176,4 Z"/>
+<path android:fillColor="#805039" android:pathData="M40,187 C44,164 57,124 70,98 C76,86 83,72 91,72 C103,72 108,85 110,100 L115,125 C117,134 120,138 126,133 L155,106 C163,98 171,92 179,98 C187,103 187,117 190,131 C194,152 200,174 212,183 C217,187 222,188 227,187 C231,186 232,190 228,193 C210,204 191,194 180,177 C171,164 166,145 164,130 L134,157 C124,167 112,171 101,160 C91,150 91,131 88,113 C76,137 66,169 62,188 C60,206 37,204 40,187 Z"/>
+</group>
+</vector>

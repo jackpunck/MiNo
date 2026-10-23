@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <attr name="minoSurface" format="color" />
+    <attr name="minoHighlight" format="color" />
+    <style name="Theme.MiNo" parent="android:Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+        <item name="android:colorAccent">#C5B5F5</item>
+        <item name="android:colorBackground">#19191E</item>
+        <item name="android:textColorPrimary">#F2EFF8</item>
+        <item name="android:textColorSecondary">#AAA6B7</item>
+        <item name="android:textColorHint">#AAA6B7</item>
+        <item name="android:colorControlNormal">#AAA6B7</item>
+        <item name="android:windowBackground">#19191E</item>
+        <item name="android:statusBarColor">#19191E</item>
+        <item name="android:navigationBarColor">#19191E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="minoSurface">#25252D</item>
+        <item name="minoHighlight">#403653</item>
+    </style>
+    <style name="Theme.MiNo.Day" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+        <item name="android:colorAccent">#62429C</item>
+        <item name="android:colorBackground">#F8F7FC</item>
+        <item name="android:textColorPrimary">#252130</item>
+        <item name="android:textColorSecondary">#625C70</item>
+        <item name="android:textColorHint">#625C70</item>
+        <item name="android:colorControlNormal">#625C70</item>
+        <item name="android:windowBackground">#F8F7FC</item>
+        <item name="android:statusBarColor">#F8F7FC</item>
+        <item name="android:navigationBarColor">#F8F7FC</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="minoSurface">#EEEBF5</item>
+        <item name="minoHighlight">#E2D7F5</item>
+    </style>
+</resources>

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only the user-triggered update screen uses the network and installer. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- 提醒要能在后台准点响，靠的是系统闹钟而不是进程内的轮询 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+        Android 12+ 的精确闹钟。拿不到就不精确（Android 12+ 可能晚一小时，受限时更久），不会崩 ——
+        见 Reminders.schedule 里 canScheduleExactAlarms 的分支。
+        刻意不申请 USE_EXACT_ALARM：那是给闹钟/日历类应用的，商店会卡。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 闹钟不跨重启，开机后要按数据重新排一遍 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MiNo"
+        android:usesCleartextTraffic="false">
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
+        </provider>
+
+        <!-- 原生界面保存输入状态；软键盘缩放内容区。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 短时系统修复作业，不是常驻或前台服务。 -->
+        <service android:name=".ReminderRecoveryJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
+
+        <!-- 到点的闹钟。不导出：只有我们自己排的 PendingIntent 能进来 -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false" />
+
+        <!-- 系统广播必须导出。BOOT_COMPLETED 是受保护广播，别的应用发不了 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 通知上的「完成」按钮 -->
+        <receiver
+            android:name=".NotificationActionReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

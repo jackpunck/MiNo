@@ -11,6 +11,25 @@ node_modules/
 # 本地数据（不应提交）
 *.broken
 
+# Android
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/app/src/main/assets/ui/
+# 签名材料：debug 之外任何一次签名都不该进仓库
+*.keystore
+*.jks
+*.p12
+key.properties
+*.keystore.base64
+*.jks.base64
+*.keystore.b64
+*.jks.b64
+/android/signing.env
+/android/signing/
+
 # Windows / 编辑器杂项
 Thumbs.db
 Desktop.ini
