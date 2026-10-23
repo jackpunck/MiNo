@@ -2,7 +2,4 @@
 <resources>
     <!-- 与 styles.css 里 #app 的深色底一致，避免启动时闪一下别的颜色 -->
 
-    <!-- 桌面图标的渐变起点；终点在 ic_launcher_background.xml 里 -->
-    <color name="ic_launcher_start">#4F46E5</color>
-    <color name="ic_launcher_end">#8B5CF6</color>
 </resources>

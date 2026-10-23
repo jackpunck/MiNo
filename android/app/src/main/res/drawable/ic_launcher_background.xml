@@ -1,10 +1,3 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 与 tools/gen-icons.mjs 同一套配色：靛蓝 → 紫罗兰，纵向 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <gradient
-        android:angle="270"
-        android:endColor="@color/ic_launcher_end"
-        android:startColor="@color/ic_launcher_start"
-        android:type="linear" />
-</shape>
+<!-- 暖棕底与便签形成对比；由 npm run icons 生成 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#805039" /></shape>

@@ -15,7 +15,7 @@ private object ReceiverWork {
         { job -> Thread(job, "mino-reminder-io") }, ThreadPoolExecutor.AbortPolicy(),
     )
 
-    fun submit(pending: BroadcastReceiver.PendingResult, onRejected: () -> Unit = {}, block: () -> Unit) {
+    fun submit(pending: BroadcastReceiver.PendingResult, onRejected: () -> Unit = {}, onFinished: () -> Unit = {}, block: () -> Unit) {
         try {
             executor.execute {
                 try {
@@ -24,6 +24,7 @@ private object ReceiverWork {
                     // 不记异常内容：路径/解析错误可能携带用户任务文字。
                     Log.e("MiNo/Receiver", "提醒后台操作失败，保留数据等待重试")
                 } finally {
+                    onFinished()
                     pending.finish()
                 }
             }
@@ -33,6 +34,7 @@ private object ReceiverWork {
             } catch (_: Exception) {
                 Log.e("MiNo/Receiver", "队列已满且重新武装失败")
             } finally {
+                onFinished()
                 pending.finish()
             }
             Log.w("MiNo/Receiver", "提醒后台队列已满")
@@ -44,8 +46,14 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra(Reminders.EXTRA_ID) ?: return
         val app = context.applicationContext
-        ReceiverWork.submit(goAsync(), onRejected = { Reminders.retryLater(app, id) }) {
+        // The system has consumed this one-shot alarm. Keep a system-owned repair
+        // request even if the process disappears before the async worker starts.
+        val generation = runCatching { ReminderRecoveryJob.schedule(app) }
+            .onFailure { Log.w("MiNo/Receiver", "暂时无法登记提醒修复") }.getOrNull()
+        ReceiverWork.submit(goAsync(), onRejected = { Reminders.retryLater(app, id) },
+            onFinished = { generation?.let { ReminderRecoveryJob.abandon(it) } }) {
             Reminders.handleFire(app, id)
+            generation?.let { ReminderRecoveryJob.complete(app, it) }
         }
     }
 }
@@ -55,7 +63,12 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!ReminderPolicy.acceptsBootAction(intent.action)) return
         val app = context.applicationContext
-        ReceiverWork.submit(goAsync()) { Reminders.reschedule(app) }
+        val generation = runCatching { ReminderRecoveryJob.schedule(app) }
+            .onFailure { Log.w("MiNo/Receiver", "暂时无法登记开机修复") }.getOrNull()
+        ReceiverWork.submit(goAsync(), onFinished = { generation?.let { ReminderRecoveryJob.abandon(it) } }) {
+            Reminders.reschedule(app)
+            generation?.let { ReminderRecoveryJob.complete(app, it) }
+        }
     }
 }
 

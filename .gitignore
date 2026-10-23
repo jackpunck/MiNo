@@ -23,6 +23,12 @@ node_modules/
 *.jks
 *.p12
 key.properties
+*.keystore.base64
+*.jks.base64
+*.keystore.b64
+*.jks.b64
+/android/signing.env
+/android/signing/
 
 # Windows / 编辑器杂项
 Thumbs.db

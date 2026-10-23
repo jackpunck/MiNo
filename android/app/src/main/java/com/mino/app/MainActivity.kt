@@ -2,15 +2,12 @@ package com.mino.app
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlarmManager
 import android.app.AlertDialog
-import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -34,6 +31,8 @@ class MainActivity : Activity() {
     }
     private var themeMode = ThemeMode.NIGHT
     private lateinit var store: Store
+    private lateinit var backupController: BackupController
+    private lateinit var updateController: UpdateController
     private lateinit var input: EditText
     private lateinit var list: ListView
     private lateinit var adapter: TodoAdapter
@@ -50,6 +49,11 @@ class MainActivity : Activity() {
     private var editingId: String? = null
     private var permissionDialog: AlertDialog? = null
     private var permissionStatus: TextView? = null
+    private var exactGuide: AlertDialog? = null
+    private var pendingExactGuide = false
+    private var notificationRequestPending = false
+    private var deferredNotificationRequest = false
+    private var resumed = false
     private var restoredReminder: Bundle? = null
     private var restoredText: Bundle? = null
     private var restorePermissions = false
@@ -66,12 +70,17 @@ class MainActivity : Activity() {
         themeMode = ThemePreference.apply(this)
         super.onCreate(savedInstanceState)
         store = Store(applicationContext)
+        backupController = BackupController(this) { recreate() }
+        updateController = UpdateController(this) { resumed }
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
         highlight = savedInstanceState?.getString("highlight") ?: intent.getStringExtra(Reminders.EXTRA_ID)
         scrollToHighlight = savedInstanceState?.getBoolean("scrollHighlight") ?: (highlight != null)
         restoredReminder = savedInstanceState?.getBundle("reminder")
         restoredText = savedInstanceState?.getBundle("edit")
         restorePermissions = savedInstanceState?.getBoolean("permissions") ?: false
+        pendingExactGuide = savedInstanceState?.getBoolean("exactGuide") ?: false
+        notificationRequestPending = savedInstanceState?.getBoolean("notificationRequest") ?: false
+        deferredNotificationRequest = savedInstanceState?.getBoolean("deferredNotificationRequest") ?: false
         savedScroll = savedInstanceState?.getBundle("scroll")
         pendingAddId = savedInstanceState?.getString("addingId")
         pendingAddDraft = savedInstanceState?.getString("addingDraft")
@@ -154,9 +163,16 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         refresh()
         reminderEditor?.refreshStatus()
         permissionStatus?.text = permissionSummary()
+        if (deferredNotificationRequest) requestReminderPermission()
+        maybeShowExactGuide()
+    }
+    override fun onPause() {
+        resumed = false
+        super.onPause()
     }
     private fun refresh() = submit(null)
     private fun mutate(change: (AppData) -> AppData) = submit(change)
@@ -164,18 +180,32 @@ class MainActivity : Activity() {
         val app = applicationContext
         val dataStore = store
         io.execute {
+            var recovery: String? = null
             try {
+                // Registration failure must abort before any data is written.
+                recovery = if (change != null) ReminderRecoveryJob.schedule(app) else null
                 val data = if (change == null) dataStore.read() else dataStore.transact(change)
                 // Context-only scheduler re-reads under its own lock; never schedule a stale snapshot.
                 val scheduleFailed = runCatching { Reminders.reschedule(app) }.isFailure
+                if (!scheduleFailed && recovery != null) {
+                    // Keep protection until all registered operations have reconciled.
+                    // Cleanup failure must not report an already committed save as failed.
+                    runCatching { ReminderRecoveryJob.complete(app, recovery) }
+                } else if (scheduleFailed && change == null) {
+                    runCatching { ReminderRecoveryJob.schedule(app).also { ReminderRecoveryJob.abandon(it) } }
+                }
+                recovery?.let { ReminderRecoveryJob.abandon(it) }
                 runOnUiThread {
                     if (alive && !isFinishing && !isDestroyed) {
                         render(data)
                         complete(true)
-                        if (scheduleFailed) toast("数据已保存，但提醒调度失败；返回应用时会重试")
+                        if (scheduleFailed) toast(if (change != null)
+                            "数据已保存，但提醒调度失败；已登记系统修复任务，系统允许后台运行时会重试，提醒可能延迟"
+                            else "提醒调度失败，请检查提醒权限与后台限制")
                     }
                 }
             } catch (_: Exception) {
+                recovery?.let { ReminderRecoveryJob.abandon(it) }
                 runOnUiThread { if (alive && !isFinishing && !isDestroyed) {
                     complete(false)
                     if (change == null && restoredAdd) { adding = false; restoredAdd = false }
@@ -282,7 +312,10 @@ class MainActivity : Activity() {
                     Logic.setTodoReminder(data, todo.id, at, mode, date, today)
                 }) { success ->
                     complete(success)
-                    if (success && at.isNotBlank()) requestReminderPermission()
+                    if (success && at.isNotBlank()) {
+                        pendingExactGuide = true
+                        requestReminderPermission()
+                    }
                 }
             }, { reminderEditor = null })
         reminderEditor?.show()
@@ -306,11 +339,17 @@ class MainActivity : Activity() {
             menu.add(1, 2, 1, "夜晚模式").apply { isCheckable = true; isChecked = themeMode == ThemeMode.NIGHT }
             menu.setGroupCheckable(1, true, true)
             menu.add(0, 3, 2, "提醒权限设置")
+            menu.add(0, 4, 3, "导出数据备份")
+            menu.add(0, 5, 4, "导入数据备份")
+            menu.add(0, 6, 5, "检查更新")
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     1 -> changeTheme(ThemeMode.DAY)
                     2 -> changeTheme(ThemeMode.NIGHT)
                     3 -> showPermissions()
+                    4 -> backupController.export()
+                    5 -> backupController.importBackup()
+                    6 -> updateController.show()
                 }
                 true
             }
@@ -322,49 +361,80 @@ class MainActivity : Activity() {
         ThemePreference.write(this, selected)
         recreate()
     }
-    private fun permissionSummary(): String {
-        val manager = getSystemService(NotificationManager::class.java)
-        val allowed = (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) && manager.areNotificationsEnabled()
-        val channel = manager.getNotificationChannel(Notifications.CHANNEL_ID)
-        val notification = if (allowed && (channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)) "已开启" else "未开启"
-        val exact = Build.VERSION.SDK_INT < 31 || getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
-        return "通知：$notification\n精确闹钟：${if (exact) "已开启" else "未开启（可能延迟）"}"
-    }
+    private fun permissionSummary(): String = ReminderReadiness.summary(this)
     private fun showPermissions() {
         if (permissionDialog != null) return
         val panel = NativeUi.panel(this)
         permissionStatus = NativeUi.label(this, permissionSummary(), 15f)
         panel.addView(permissionStatus)
+        panel.addView(NativeUi.label(this, ReminderReadiness.APPROXIMATE + "\n\n" + ReminderReadiness.BACKGROUND, 14f))
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             panel.addView(NativeUi.button(this, "允许通知") { requestReminderPermission() })
         panel.addView(NativeUi.button(this, "系统通知设置") {
             openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         })
         panel.addView(NativeUi.button(this, "精确闹钟设置") {
-            if (Build.VERSION.SDK_INT >= 31) openSettings(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+            if (Build.VERSION.SDK_INT >= 31) openSettings(ReminderReadiness.exactSettings(this))
             else toast("此系统无需单独授予精确闹钟权限")
         })
-        permissionDialog = AlertDialog.Builder(this).setTitle("提醒权限").setView(panel).setPositiveButton("完成", null)
-            .create().also { dialog -> dialog.setOnDismissListener { permissionDialog = null; permissionStatus = null }; dialog.show() }
+        panel.addView(NativeUi.button(this, "电池优化设置") { openSettings(ReminderReadiness.batterySettings()) })
+        panel.addView(NativeUi.button(this, "应用信息 / 后台与自启动") { openSettings(ReminderReadiness.appSettings(this)) })
+        val scroll = ScrollView(this).apply { addView(panel) }
+        permissionDialog = AlertDialog.Builder(this).setTitle("提醒权限").setView(scroll).setPositiveButton("完成", null)
+            .create().also { dialog -> dialog.setOnDismissListener { permissionDialog = null; permissionStatus = null; maybeShowExactGuide() }; dialog.show() }
     }
     private fun openSettings(intent: Intent) {
         try { startActivity(intent) } catch (_: Exception) { toast("无法打开系统设置，请在应用信息中设置") }
     }
     private fun requestReminderPermission() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS_REQUEST)
+        if (!resumed) { deferredNotificationRequest = true; return }
+        deferredNotificationRequest = false
+        if (notificationRequestPending) return
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationRequestPending = true
+            try {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS_REQUEST)
+            } catch (_: Exception) {
+                notificationRequestPending = false
+                toast("无法请求通知权限，请在提醒权限设置中开启")
+                maybeShowExactGuide()
+            }
+        } else maybeShowExactGuide()
+    }
+    private fun maybeShowExactGuide() {
+        if (!pendingExactGuide || notificationRequestPending || deferredNotificationRequest || !resumed || !alive || isFinishing || isDestroyed || exactGuide != null || permissionDialog != null || restorePermissions) return
+        if (ReminderReadiness.exactAllowed(this)) { pendingExactGuide = false; return }
+        exactGuide = AlertDialog.Builder(this).setTitle("让提醒更准时")
+            .setMessage("提醒已保存。" + ReminderReadiness.APPROXIMATE + "\n\n是否前往系统设置允许精确闹钟？")
+            .setPositiveButton("允许精确提醒") { _, _ ->
+                pendingExactGuide = false
+                if (Build.VERSION.SDK_INT >= 31) openSettings(ReminderReadiness.exactSettings(this))
+            }
+            .setNegativeButton("保留近似提醒") { _, _ -> pendingExactGuide = false }
+            .setOnCancelListener { pendingExactGuide = false }
+            .create().also { dialog ->
+                dialog.setOnDismissListener { exactGuide = null }
+                dialog.show()
+            }
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == NOTIFICATIONS_REQUEST) {
+            notificationRequestPending = false
             reminderEditor?.refreshStatus(); permissionStatus?.text = permissionSummary()
             if (grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) toast("提醒已保存；通知关闭时无法显示，可在提醒权限中开启")
             refresh()
+            maybeShowExactGuide()
         }
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent); setIntent(intent)
         intent.getStringExtra(Reminders.EXTRA_ID)?.let { id -> highlight = id; scrollToHighlight = true; refresh() }
+    }
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        backupController.onActivityResult(requestCode, resultCode, data)
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("draft", input.text.toString())
@@ -377,12 +447,16 @@ class MainActivity : Activity() {
             Bundle().apply { putString("id", id); putString("text", textEditor?.text?.toString()) }
         } ?: restoredText)
         outState.putBoolean("permissions", permissionDialog != null || restorePermissions)
+        outState.putBoolean("exactGuide", pendingExactGuide)
+        outState.putBoolean("notificationRequest", notificationRequestPending)
+        outState.putBoolean("deferredNotificationRequest", deferredNotificationRequest)
         super.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
         alive = false
+        updateController.destroy()
         if (receiverRegistered) unregisterReceiver(changedReceiver)
-        reminderEditor?.dismiss(); textDialog?.dismiss(); permissionDialog?.dismiss()
+        reminderEditor?.dismiss(); textDialog?.dismiss(); permissionDialog?.dismiss(); exactGuide?.dismiss()
         super.onDestroy()
     }
     private fun toast(message: String) { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }

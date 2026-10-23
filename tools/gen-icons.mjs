@@ -1,4 +1,4 @@
-// 生成 MiNo 的应用图标（PNG + ICO）。
+// 从共享矢量源生成 MiNo 的 PC（PNG / ICO / SVG）与 Android 图标。
 //
 // tauri-build 在 Windows 上会把 icons/icon.ico 编译进可执行文件的资源段，
 // 缺少该文件会直接导致 `cargo build` 失败，因此这个脚本是仓库自举的一部分。
@@ -7,6 +7,7 @@
 //
 // 不依赖任何第三方包 —— PNG 用 zlib 手写，ICO 只是给 PNG 套一层容器。
 
+import { artwork, flatten } from './icon-artwork.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -57,98 +58,38 @@ function encodePng(rgba, size) {
 // 绘制
 // ---------------------------------------------------------------------------
 
-const lerp = (a, b, t) => a + (b - a) * t;
-
-function insideRoundedRect(x, y, size, radius) {
-  // 收缩半像素，避免边缘被切掉
-  const min = 0, max = size;
-  const cx = Math.min(Math.max(x, min + radius), max - radius);
-  const cy = Math.min(Math.max(y, min + radius), max - radius);
-  const dx = x - cx;
-  const dy = y - cy;
-  return dx * dx + dy * dy <= radius * radius;
-}
-
-/** 点到线段的最短距离 */
-function distToSegment(px, py, ax, ay, bx, by) {
-  const vx = bx - ax, vy = by - ay;
-  const wx = px - ax, wy = py - ay;
-  const len2 = vx * vx + vy * vy;
-  const t = len2 === 0 ? 0 : Math.min(1, Math.max(0, (wx * vx + wy * vy) / len2));
-  const dx = px - (ax + t * vx);
-  const dy = py - (ay + t * vy);
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-/** 以 4x 超采样绘制，再盒式降采样，得到边缘平滑的图标 */
+// 扫描线填充共享矢量路径，4 倍超采样；透明边缘按预乘色降采样。
 function renderIcon(size) {
-  const SS = 4;
-  const S = size * SS;
-
+  const SS = 4, S = size * SS;
   const hi = new Uint8Array(S * S * 4);
-  const radius = S * 0.235;
-  const stroke = S * 0.088;
-
-  // 对勾折线（归一化坐标）
-  const pts = [
-    [0.28, 0.53],
-    [0.43, 0.68],
-    [0.73, 0.33],
-  ].map(([x, y]) => [x * S, y * S]);
-
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      const i = (y * S + x) * 4;
-      const px = x + 0.5, py = y + 0.5;
-
-      if (!insideRoundedRect(px, py, S, radius)) continue; // 保持透明
-
-      // 靛蓝 → 紫罗兰 的纵向渐变
-      const t = y / S;
-      let r = lerp(79, 139, t);
-      let g = lerp(70, 92, t);
-      let b = lerp(229, 246, t);
-
-      // 对勾：用白色覆盖
-      let d = Infinity;
-      for (let k = 0; k < pts.length - 1; k++) {
-        d = Math.min(d, distToSegment(px, py, ...pts[k], ...pts[k + 1]));
+  for (const {color, path} of artwork) {
+    const points = flatten(path).map(([x,y]) => [x*S/256,y*S/256]);
+    const rgb = color.match(/\w\w/g).map(v => parseInt(v,16));
+    for (let y=0;y<S;y++) {
+      const py=y+0.5, crossings=[];
+      for (let i=0,j=points.length-1;i<points.length;j=i++) {
+        const [ax,ay]=points[j], [bx,by]=points[i];
+        if ((ay>py)!==(by>py)) crossings.push(ax+(py-ay)*(bx-ax)/(by-ay));
       }
-      const cov = Math.min(1, Math.max(0, stroke / 2 - d + 0.5));
-      if (cov > 0) {
-        r = lerp(r, 255, cov);
-        g = lerp(g, 255, cov);
-        b = lerp(b, 255, cov);
-      }
-
-      hi[i] = r; hi[i + 1] = g; hi[i + 2] = b; hi[i + 3] = 255;
-    }
-  }
-
-  // 盒式降采样（对预乘前的颜色做平均；边缘处 alpha 一并平均）
-  const out = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      let r = 0, g = 0, b = 0, a = 0;
-      for (let sy = 0; sy < SS; sy++) {
-        for (let sx = 0; sx < SS; sx++) {
-          const j = ((y * SS + sy) * S + (x * SS + sx)) * 4;
-          const av = hi[j + 3] / 255;
-          r += hi[j] * av; g += hi[j + 1] * av; b += hi[j + 2] * av; a += av;
+      crossings.sort((a,b)=>a-b);
+      for (let k=0;k+1<crossings.length;k+=2) {
+        for (let x=Math.max(0,Math.ceil(crossings[k]-0.5));x<Math.min(S,Math.ceil(crossings[k+1]-0.5));x++) {
+          hi.set([...rgb,255],(y*S+x)*4);
         }
       }
-      const n = SS * SS;
-      const o = (y * size + x) * 4;
-      const aNorm = a / n;
-      if (aNorm > 0) {
-        out[o] = Math.round(r / a);       // 反预乘，避免边缘发暗
-        out[o + 1] = Math.round(g / a);
-        out[o + 2] = Math.round(b / a);
-      }
-      out[o + 3] = Math.round(aNorm * 255);
     }
   }
-
+  const out=new Uint8Array(size*size*4);
+  for (let y=0;y<size;y++) for (let x=0;x<size;x++) {
+    let r=0,g=0,b=0,a=0;
+    for (let sy=0;sy<SS;sy++) for (let sx=0;sx<SS;sx++) {
+      const j=((y*SS+sy)*S+x*SS+sx)*4, alpha=hi[j+3]/255;
+      r+=hi[j]*alpha;g+=hi[j+1]*alpha;b+=hi[j+2]*alpha;a+=alpha;
+    }
+    const o=(y*size+x)*4;
+    if(a) {out[o]=Math.round(r/a);out[o+1]=Math.round(g/a);out[o+2]=Math.round(b/a);}
+    out[o+3]=Math.round(a/(SS*SS)*255);
+  }
   return out;
 }
 
@@ -200,3 +141,19 @@ writeFileSync(join(OUT_DIR, 'icon.ico'), encodeIco(pngs));
 console.log(`已生成图标 → ${OUT_DIR}`);
 for (const { size } of pngs) console.log(`  ${size}x${size}`);
 console.log('  icon.ico');
+
+// SVG 是可编辑的独立图标；Android 前景完整置于自适应图标的安全圆内。
+const paths = artwork.map(({color,path}) => '<path fill="'+color+'" d="'+path+'"/>').join('');
+writeFileSync(join(OUT_DIR,'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">'+paths+'</svg>\n');
+const RES=join(OUT_DIR,'../../android/app/src/main/res');
+function vector(paths,scale,offset,size=108) {
+  return '<?xml version="1.0" encoding="utf-8"?>\n<!-- 由 npm run icons 生成，请修改 tools/icon-artwork.mjs -->\n'+
+    '<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="'+size+'dp" android:height="'+size+'dp" android:viewportWidth="'+size+'" android:viewportHeight="'+size+'">\n'+
+    '<group android:scaleX="'+scale+'" android:scaleY="'+scale+'" android:translateX="'+offset+'" android:translateY="'+offset+'">\n'+
+    paths.map(({color,path})=>'<path android:fillColor="'+color+'" android:pathData="'+path+'"/>').join('\n')+'\n</group>\n</vector>\n';
+}
+writeFileSync(join(RES,'drawable/ic_launcher_foreground.xml'),vector(artwork,0.1875,30));
+writeFileSync(join(RES,'drawable/ic_launcher_monochrome.xml'),vector([{...artwork[2],color:'#FFFFFF'}],0.25,22));
+writeFileSync(join(RES,'drawable/ic_notification.xml'),vector([{...artwork[2],color:'#FFFFFF'}],0.09375,0,24));
+writeFileSync(join(RES,'drawable/ic_launcher_background.xml'),'<?xml version="1.0" encoding="utf-8"?>\n<!-- 暖棕底与便签形成对比；由 npm run icons 生成 -->\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#805039" /></shape>\n');
+console.log('已同步 Android 自适应图标、单色主题图标与通知图标');

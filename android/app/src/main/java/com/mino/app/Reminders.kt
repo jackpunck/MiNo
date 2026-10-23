@@ -18,10 +18,12 @@ object Reminders {
     private val LOCK = Any()
     private const val RETRY_MS = 15 * 60 * 1000L
 
-    fun reschedule(context: Context): Unit = synchronized(LOCK) {
+    fun reschedule(context: Context, shouldContinue: () -> Boolean = { true }): Unit = synchronized(LOCK) {
+        if (!shouldContinue()) return
         val app = context.applicationContext
         // 读取失败时保留原有闹钟，不能先撤掉再发现没有可用快照。
         val data = Store(app).read()
+        if (!shouldContinue()) return
         Notifications.reconcile(app, data)
         val am = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -30,11 +32,16 @@ object Reminders {
         val fresh = data.todos.mapNotNull { t ->
             ReminderPolicy.nextTrigger(t, now, ZoneId.systemDefault())?.let { t.id to it }
         }.toMap()
-        // 先持久化并集：进程中途消失，下轮仍知道该撤哪些旧闹钟。
-        check(prefs.edit().putStringSet(KEY_IDS, previous + fresh.keys).commit())
-        for (id in previous) cancel(app, am, id)
-        for ((id, at) in fresh) arm(app, am, id, at)
-        check(prefs.edit().putStringSet(KEY_IDS, fresh.keys).commit())
+        AlarmReconciler.apply(previous, fresh,
+            { id, at ->
+                if (!shouldContinue()) throw java.util.concurrent.CancellationException()
+                arm(app, am, id, at)
+            },
+            { id ->
+                if (!shouldContinue()) throw java.util.concurrent.CancellationException()
+                cancel(app, am, id)
+            },
+            { ids -> check(prefs.edit().putStringSet(KEY_IDS, ids).commit()) })
     }
 
     /** 兼容迁移中的调用方；故意忽略调用方可能过期的快照。 */

@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only the user-triggered update screen uses the network and installer. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 提醒要能在后台准点响，靠的是系统闹钟而不是进程内的轮询 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
-        Android 12+ 的精确闹钟。拿不到就不精确（可能晚几分钟），不会崩 ——
+        Android 12+ 的精确闹钟。拿不到就不精确（Android 12+ 可能晚一小时，受限时更久），不会崩 ——
         见 Reminders.schedule 里 canScheduleExactAlarms 的分支。
         刻意不申请 USE_EXACT_ALARM：那是给闹钟/日历类应用的，商店会卡。
     -->
@@ -21,6 +24,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MiNo"
         android:usesCleartextTraffic="false">
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
+        </provider>
 
         <!-- 原生界面保存输入状态；软键盘缩放内容区。 -->
         <activity
@@ -34,6 +42,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 短时系统修复作业，不是常驻或前台服务。 -->
+        <service android:name=".ReminderRecoveryJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
 
         <!-- 到点的闹钟。不导出：只有我们自己排的 PendingIntent 能进来 -->
         <receiver

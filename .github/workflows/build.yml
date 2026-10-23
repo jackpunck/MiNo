@@ -21,6 +21,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# 日常验证只读；仅两个上传 Release 的 job 申请写权限。
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # 类型检查：日常反馈靠这个
@@ -49,6 +53,7 @@ jobs:
           done
           node tools/check-commands.mjs
           node tools/check-version.mjs
+          node --test tools/generate-android-update.test.mjs
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
@@ -91,6 +96,9 @@ jobs:
 
       - name: 安装 Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: false
 
       - name: 缓存 Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -121,7 +129,150 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # 出包：打 tag 或手动触发
+  # Android 正式包：只在 tag 上使用正式密钥，绝不拿 benchmark 充当 release。
+  # ---------------------------------------------------------------------------
+  android-release:
+    name: Android 正式签名
+    needs: [check, android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_VERSION_NAME: ${{ vars.ANDROID_VERSION_NAME }}
+      ANDROID_VERSION_CODE: ${{ vars.ANDROID_VERSION_CODE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 解析 Android 版本
+        shell: bash
+        run: |
+          # 未配置 repository variable 时按默认版本处理；Gradle/生成器本身拒绝空覆盖。
+          if [ -z "$ANDROID_VERSION_NAME" ]; then unset ANDROID_VERSION_NAME; fi
+          if [ -z "$ANDROID_VERSION_CODE" ]; then unset ANDROID_VERSION_CODE; fi
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { resolveVersion } from './tools/generate-android-update.mjs';
+          assertTag(process.env.GITHUB_REF_NAME);
+          function assertTag(tag) {
+            if (!/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag)) {
+              throw new Error('Android release requires a stable vX.Y.Z tag');
+            }
+          }
+          const desktop = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).version;
+          const version = resolveVersion(desktop);
+          appendFileSync(process.env.GITHUB_ENV, `ANDROID_VERSION_NAME=${version.versionName}\nANDROID_VERSION_CODE=${version.versionCode}\n`);
+          NODE
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: false
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 检查密钥并构建正式 APK
+        shell: bash
+        env:
+          MINO_KEYSTORE_BASE64: ${{ secrets.MINO_KEYSTORE_BASE64 }}
+          MINO_KEYSTORE_PASSWORD: ${{ secrets.MINO_KEYSTORE_PASSWORD }}
+          MINO_KEY_ALIAS: ${{ secrets.MINO_KEY_ALIAS }}
+          MINO_KEY_PASSWORD: ${{ secrets.MINO_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 不启用 shell tracing；报错只打印缺失的名称。
+          for name in MINO_KEYSTORE_BASE64 MINO_KEYSTORE_PASSWORD MINO_KEY_ALIAS MINO_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required Android release secret: $name"
+              exit 1
+            fi
+          done
+          export MINO_KEYSTORE_PATH="$RUNNER_TEMP/mino-release.jks"
+          trap 'rm -f -- "$MINO_KEYSTORE_PATH"' EXIT
+          umask 077
+          printf '%s' "$MINO_KEYSTORE_BASE64" | base64 --decode > "$MINO_KEYSTORE_PATH"
+          test -s "$MINO_KEYSTORE_PATH"
+          unset MINO_KEYSTORE_BASE64
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
+
+      - name: 清理临时签名材料
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/mino-release.jks"
+
+      - name: 校验签名与 APK 信息，生成更新元数据
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          sdk_tools="$ANDROID_HOME/build-tools/35.0.0"
+          "$sdk_tools/apksigner" verify --verbose "$apk"
+          "$sdk_tools/aapt" dump badging "$apk" > "$RUNNER_TEMP/mino-apk-badging.txt"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const badging = readFileSync(`${process.env.RUNNER_TEMP}/mino-apk-badging.txt`, 'utf8');
+          const pkg = badging.match(/^package: name='com\.mino\.app' versionCode='(\d+)' versionName='([^']+)'/m);
+          assert.ok(pkg, 'Expected MiNo release package');
+          assert.equal(pkg[1], process.env.ANDROID_VERSION_CODE, 'APK versionCode mismatch');
+          assert.equal(pkg[2], process.env.ANDROID_VERSION_NAME, 'APK versionName mismatch');
+          assert.match(badging, /^sdkVersion:'26'$/m, 'APK minSdk mismatch');
+          NODE
+          mkdir -p "$RUNNER_TEMP/mino-android-release"
+          target="$RUNNER_TEMP/mino-android-release/MiNo_android_${ANDROID_VERSION_NAME}.apk"
+          cp "$apk" "$target"
+          node tools/generate-android-update.mjs --apk "$target" \
+            --output "$RUNNER_TEMP/mino-android-release/android-update.json" \
+            --tag "$RELEASE_TAG" --notes "MiNo Android ${ANDROID_VERSION_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiNo-Android-release
+          path: |
+            ${{ runner.temp }}/mino-android-release/*.apk
+            ${{ runner.temp }}/mino-android-release/android-update.json
+          if-no-files-found: error
+
+  # 等 Windows 创建完同一个 Release 再追加 Android assets，避免并行创建冲突。
+  android-publish:
+    name: 上传 Android Release
+    needs: [build, android-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MiNo-Android-release
+          path: android-release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: android-release/MiNo_android_*.apk
+
+      # Make an update discoverable only after its APK upload has succeeded.
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: android-release/android-update.json
+
+  # ---------------------------------------------------------------------------
+  # Windows 出包：打 tag 或手动触发
   # ---------------------------------------------------------------------------
   build:
     name: 打包
