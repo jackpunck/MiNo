@@ -49,7 +49,7 @@ jobs:
           done
           node tools/check-commands.mjs
           node tools/check-version.mjs
-          node --experimental-vm-modules --test tools/window-hover.test.mjs
+          node --test tools/window-hover.test.mjs
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable

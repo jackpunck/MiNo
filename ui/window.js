@@ -42,6 +42,9 @@ let active = true;
  */
 let hoverBlocked = false;
 
+// 鼠标离开或焦点变化后，丢弃尚未返回的悬停查询。
+let hoverRequest = 0;
+
 /** 输入框。模块级是因为收缩判据要用它，见 hasPendingInput。 */
 let inputEl = null;
 
@@ -86,11 +89,10 @@ function why(tag) {
  */
 async function refreshHoverBlock() {
   try {
-    hoverBlocked = !!(await invoke('foreground_blocks_hover'));
+    return !!(await invoke('foreground_blocks_hover'));
   } catch {
-    hoverBlocked = false;
+    return false;
   }
-  return hoverBlocked;
 }
 
 /**
@@ -252,6 +254,7 @@ function scheduleCollapse() {
  * 没反应」的根因。现在看 hoverBlocked，见 refreshHoverBlock。
  */
 function setActive(next) {
+  ++hoverRequest;
   active = next;
 
   cancelCollapse();
@@ -379,11 +382,15 @@ export function initWindow() {
   // 判据要问 Rust，所以这里是异步的：mouseenter → 查一次 → 再决定展开。多出来
   // 的那几毫秒对 4px 感应条的手感没有影响。
   document.documentElement.addEventListener('mouseenter', () => {
+    const request = ++hoverRequest;
     refreshHoverBlock().then((blocked) => {
+      if (request !== hoverRequest) return;
+      hoverBlocked = blocked;
       if (!blocked) expand('hover');
     });
   });
   document.documentElement.addEventListener('mouseleave', (e) => {
+    ++hoverRequest;
     // 鼠标键还按着 = 用户在拖东西（拖窗口，或者拖待办排序），不是「离开」。
     //
     // 这道判断不依赖任何状态机，是 windowDragging 之外的冗余保险：拖窗口走的是

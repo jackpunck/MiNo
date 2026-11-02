@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-async function setup(blocked) {
+async function setup(blocked, pending) {
   const handlers = new Map();
   const events = new Map();
   const calls = [];
@@ -21,19 +21,24 @@ async function setup(blocked) {
   const exports = {
     invoke: async (name, args) => {
       calls.push({ name, args });
-      if (name === 'foreground_blocks_hover') return blocked;
+      if (name === 'foreground_blocks_hover') return pending ?? blocked;
       if (name === 'foreground_is_fullscreen') return false; // 普通窗口并非全屏
     },
     call() {}, state: { data: { settings: {} }, ui: {} },
     focusInput() {}, isEditing: () => false, commitEdit() {},
     closeSettings() {}, openSettings() {},
   };
-  const module = new vm.SourceTextModule(readFileSync(new URL('../ui/window.js', import.meta.url), 'utf8'), { context });
-  await module.link(() => new vm.SyntheticModule(Object.keys(exports), function () {
-    for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
-  }, { context }));
-  await module.evaluate();
-  module.namespace.initWindow();
+  // 隔离 DOM/Tauri 依赖后执行真实窗口模块，使用稳定的 vm.Script 兼容 CI Node 20。
+  context.dependencies = exports;
+  const source = readFileSync(new URL('../ui/window.js', import.meta.url), 'utf8')
+    .replace(/^import .*;\r?$/gm, '')
+    .replace(/^export /gm, '');
+  new vm.Script(`
+    const { invoke, call, state, focusInput, isEditing, commitEdit, closeSettings, openSettings } = dependencies;
+    ${source}
+    globalThis.initWindow = initWindow;
+  `).runInContext(context);
+  context.initWindow();
   return { handlers, events, calls };
 }
 
@@ -59,3 +64,17 @@ test('主动唤起获得焦点不受其他窗口的悬停门控限制', async ()
   await flush();
   assert.ok(app.calls.some(c => c.name === 'set_edge_collapsed' && c.args.collapsed === false));
 });
+
+for (const event of ['mouseleave', 'focus-lost']) {
+  test(`悬停查询迟到时不覆盖 ${event}`, async () => {
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const app = await setup(false, pending);
+    app.handlers.get('mouseenter')();
+    if (event === 'mouseleave') app.handlers.get('mouseleave')({ buttons: 0 });
+    else app.events.get('mino://focus-changed')({ payload: false });
+    resolve(false);
+    await flush();
+    assert.equal(app.calls.some(c => c.name === 'set_edge_collapsed' && c.args.collapsed === false), false);
+  });
+}
