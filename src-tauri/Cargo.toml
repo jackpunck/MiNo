@@ -18,8 +18,8 @@ base64 = "0.22"
 
 # 为两件事：
 #
-# 1. 判断前台窗口是不是铺满整块显示器的全屏程序（感应条的悬停门控，见
-#    window::foreground_is_fullscreen）。浏览器里看不到别的窗口，这件事只有 Win32 知道。
+# 1. 判断前台窗口是不是其他程序（感应条的悬停门控，见
+#    window::foreground_blocks_hover）。浏览器里看不到别的窗口，这件事只有 Win32 知道。
 # 2. 读写开机自启动的注册表项（见 autostart）。那里刻意不用 tauri-plugin-autostart：
 #    它只有「写 Run 项」这一半，读不出任务管理器写在 StartupApproved 里的禁用标记，
 #    于是用户在任务管理器里关掉之后，开关还会继续说「已开启」—— 那正是要避免的。

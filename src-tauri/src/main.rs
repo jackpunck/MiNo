@@ -79,7 +79,7 @@ fn main() {
             commands::apply_font_to_all,
             commands::runtime_info,
             commands::set_autostart,
-            commands::foreground_is_fullscreen,
+            commands::foreground_blocks_hover,
             commands::open_release_page,
             commands::save_window_position,
         ])

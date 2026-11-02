@@ -419,71 +419,63 @@ fn save_position_throttled(app: &AppHandle, x: i32, y: i32) {
 }
 
 // ---------------------------------------------------------------------------
-// 前台全屏探测
+// 前台窗口探测
 // ---------------------------------------------------------------------------
 
-/// 前台窗口是不是一个铺满整块显示器的程序 —— 全屏视频、全屏演示、F11 的网页。
-///
-/// 只服务于一件事：感应条的悬停门控（[crate::commands::foreground_is_fullscreen]）。
-/// 全屏内容前面弹出一块浮窗是真的打扰；其余情况（桌面、普通窗口、窗口化的浏览器）
-/// 用户把鼠标挪到感应条上就是想用它，拦着只会让感应条看起来像坏了。
-///
-/// 判据是「前台窗口的矩形盖住了它所在显示器的矩形」。三条必须记住的：
-///
-///   - **桌面也满足这个判据**，所以要用 `GetShellWindow` 把它排掉。漏了这一步，
-///     「回到桌面后感应条没反应」会原样保留 —— 而那是要修的 bug 本身。
-///   - **容差不能省。** 无边框全屏的窗口边界经常和显示器差一两个像素，严格相等
-///     会让最典型的全屏场景漏判成「不全屏」。
-///   - **拿不到答案一律返回 `false`（放行）。** 这个函数只用来*抑制*悬停，失败方向
-///     必须偏向「照常展开」：退化成多展开一次，远好过退化成感应条永远叫不醒。
-pub fn foreground_is_fullscreen() -> bool {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
+/// 其他程序在前台时，禁止感应条悬停展开；桌面和 MiNo 自身放行。
+/// 不看窗口是否全屏，也不要求 MiNo 必须活动，避免桌面悬停自锁。
+/// 查询失败沿用放行策略。零 IO、零锁。
+pub fn foreground_blocks_hover() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetShellWindow, GetWindowRect,
+        GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowThreadProcessId,
     };
 
-    /// 无边框全屏的边界常与显示器差一两个像素。
-    const TOLERANCE: i32 = 2;
-
-    // 全程零 IO，只是几个查询调用。失败路径全部提前 return false。
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
+        if hwnd.is_null() || hwnd == GetShellWindow() {
             return false;
         }
 
-        // 桌面（Progman / WorkerW）铺满整块屏幕，但它不是「全屏内容」。
-        // 点一下桌面它就变前台 —— 不排掉的话，我们正要修的那个场景会被判成
-        // 「有全屏程序」，然后继续不响应。
-        if hwnd == GetShellWindow() {
+        let mut pid = 0;
+        if GetWindowThreadProcessId(hwnd, &mut pid) == 0 || pid == 0 {
+            return false;
+        }
+        if pid == std::process::id() {
             return false;
         }
 
-        // windows-sys 的结构体不实现 Default，用 zeroed 而不是 `..Default::default()`。
-        let mut window_rect: RECT = std::mem::zeroed();
-        if GetWindowRect(hwnd, &mut window_rect) == 0 {
+        // Explorer 的桌面可能是 Progman 或 WorkerW，不能按整个 explorer.exe
+        // 进程放行，否则资源管理器窗口也会被当成桌面。
+        let mut class_name = [0u16; 256];
+        let len = GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32);
+        if len == 0 {
             return false;
         }
+        let class_name = String::from_utf16_lossy(&class_name[..len as usize]);
+        blocks_hover_for_window(pid, std::process::id(), &class_name)
+    }
+}
 
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if monitor.is_null() {
-            return false;
-        }
+fn blocks_hover_for_window(pid: u32, own_pid: u32, class_name: &str) -> bool {
+    pid != own_pid && !matches!(class_name, "Progman" | "WorkerW")
+}
 
-        let mut info: MONITORINFO = std::mem::zeroed();
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if GetMonitorInfoW(monitor, &mut info) == 0 {
-            return false;
-        }
+#[cfg(test)]
+mod hover_tests {
+    use super::blocks_hover_for_window;
 
-        let m = info.rcMonitor;
-        window_rect.left <= m.left + TOLERANCE
-            && window_rect.top <= m.top + TOLERANCE
-            && window_rect.right >= m.right - TOLERANCE
-            && window_rect.bottom >= m.bottom - TOLERANCE
+    #[test]
+    fn desktop_and_mino_allow_hover() {
+        assert!(!blocks_hover_for_window(10, 20, "Progman"));
+        assert!(!blocks_hover_for_window(10, 20, "WorkerW"));
+        assert!(!blocks_hover_for_window(20, 20, "MiNo"));
+    }
+
+    #[test]
+    fn other_windows_block_hover_regardless_of_size() {
+        assert!(blocks_hover_for_window(10, 20, "Chrome_WidgetWin_1"));
+        assert!(blocks_hover_for_window(10, 20, "CabinetWClass"));
+        assert!(blocks_hover_for_window(10, 20, "Notepad"));
     }
 }
 
