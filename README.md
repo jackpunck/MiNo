@@ -437,3 +437,9 @@ tools/
 .github/workflows/
 └── build.yml      cargo check + test;打 tag 或手动触发时出包
 ```
+
+## 构建产物交付约定
+
+每次出包都将最新产物直接放在仓库 `dist/` 根目录，覆盖旧版，不使用版本子目录。
+Windows 使用固定文件名 `dist/MiNo.exe`（便携版）与 `dist/MiNo-setup.exe`（安装包），下载并核验后覆盖；清理根目录遗留的 `MiNo_*_x64-setup.exe` 旧安装包。桌面版交付保留其他平台文件。
+发布修复时递增版本号，同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`，验证后推送对应版本 tag，供应用手动检查更新。
